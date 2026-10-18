@@ -3,7 +3,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from .core import analyze
-from .kubernetes import ClusterError, contexts, namespaces, live_analyze
+from .kubernetes import ClusterError, contexts, namespaces, live_analyze, sync_plan, sync_execute
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
@@ -38,7 +38,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self):
-        if self.path not in ('/api/analyze', '/api/live/analyze', '/api/namespaces'):
+        host = self.headers.get('Host', '')
+        origin = self.headers.get('Origin')
+        if host not in (f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}') or (origin and origin != 'http://' + host):
+            self.reply(403, {'error': 'Only same-origin local requests are accepted.'})
+            return
+        if self.headers.get_content_type() != 'application/json':
+            self.reply(415, {'error': 'Content-Type must be application/json.'})
+            return
+        if self.path not in ('/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute'):
             self.reply(404, {'error': 'Not found'})
             return
         try:
@@ -47,7 +55,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(413, {'error': 'JSON payload must be between 1 byte and 5 MB'})
                 return
             body = json.loads(self.rfile.read(length))
-            if self.path == '/api/namespaces':
+            if self.path == '/api/sync/plan':
+                result = sync_plan(body)
+            elif self.path == '/api/sync/execute':
+                result = sync_execute(body)
+            elif self.path == '/api/namespaces':
                 result = namespaces(body['context'])
             elif self.path == '/api/live/analyze':
                 result = live_analyze(body)

@@ -36,12 +36,12 @@ semantic/defaulting equivalence. It does not validate API schemas, readiness,
 RBAC, storage compatibility or dependency order. Secret representations must
 use matching data/stringData encoding for meaningful comparison.
 
-## Next stages
+## Original roadmap
 
 Read-only kubectl adapter with explicit context and API error handling; then
 migration plans with dry-run validation, explicit execution approval and audit
-results. No apply, prune, email or persistent-volume/database transfer is
-implemented in this release. Existing production scripts have not been run.
+results. Single-resource sync is now supported as described below; prune, email and
+persistent-volume/database transfer remain outside scope. Existing production scripts have not been run.
 
 ## Live cluster comparison
 
@@ -101,3 +101,32 @@ PowerShell open while using the app. Use Ctrl+C to stop. A corporate VPN may
 be needed for private AKS DNS/endpoints. No cloud-hosted credentials are needed
 when the application runs on Windows. This Windows procedure has not been
 executed in the Linux development environment.
+
+
+## Side-by-side comparison and individual sync (v0.3)
+
+Load contexts and select exact names in the Source and Target dropdowns. The
+application does not assume a target context named `nl-aks-dev` exists. If the
+intended target is absent, use your established AKS credential setup procedure
+to add it to your local kubeconfig, then reload contexts. Selecting another
+context merely to bypass the error could point at the wrong cluster.
+
+Click a resource name for normalized source (left) and target (right). Changed
+JSON-pointer fields appear red, including masked Secret fields whose actual
+values differ. The source preview includes configured registry/OSM transforms.
+
+In live mode, source resources have **Sync to target** buttons. Each click
+re-reads the source, prepares a transformed manifest and performs a target
+server-side dry-run. Review the target context, namespace, operation and masked
+manifest, then explicitly confirm. Updates use server-side apply with field
+manager `aks-migrator`, without force-conflicts. New resources use create.
+Target resourceVersion is retained for updates and checked before execution;
+changes after preview require a new preview. Plans are single-use, expire in
+five minutes and remain only in server memory. Restart discards pending plans.
+
+Sync requires target write RBAC and a pre-existing target namespace. Namespace
+creation, bulk sync, prune and volume contents are not included. Admission,
+immutable fields and field ownership conflicts can prevent a sync; no automatic
+forced override is attempted. Sync can trigger workload rollouts. Re-analyze
+after successful sync to refresh results. These paths are tested with simulated
+kubectl responses; live writes require validation on your own clusters.

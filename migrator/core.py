@@ -104,6 +104,16 @@ def safe_manifest(obj):
     return obj
 
 
+def difference_paths(a, b, path=''):
+    if isinstance(a, dict) and isinstance(b, dict):
+        return [p for key in sorted(a.keys() | b.keys())
+                for p in difference_paths(a.get(key), b.get(key), path + '/' + key.replace('~', '~0').replace('/', '~1'))]
+    if isinstance(a, list) and isinstance(b, list):
+        return [p for i in range(max(len(a), len(b)))
+                for p in difference_paths(a[i] if i < len(a) else None, b[i] if i < len(b) else None, path + '/' + str(i))]
+    return [path or '/'] if a != b else []
+
+
 def analyze(source, target, namespaces, old_registry='', new_registry=''):
     if not namespaces or any(ns in PROTECTED for ns in namespaces):
         raise ValueError('Select at least one non-protected namespace')
@@ -126,6 +136,9 @@ def analyze(source, target, namespaces, old_registry='', new_registry=''):
         a, b = src.get(key), dst.get(key)
         status = 'TARGET_ONLY' if a is None else 'SOURCE_ONLY' if b is None else 'MATCH' if a == b else 'DIFF'
         rows.append({'kind': key[1], 'namespace': key[2], 'name': key[3], 'status': status,
-                     'manifest': safe_manifest(a) if a else None})
+                     'manifest': safe_manifest(a) if a else None,
+                     'target_manifest': safe_manifest(b) if b else None,
+                     'apiVersion': (a or b)['apiVersion'],
+                     'diff_paths': difference_paths(a, b)})
     return {'resources': rows, 'skipped': skipped, 'summary': {s: sum(r['status'] == s for r in rows) for s in ('MATCH', 'DIFF', 'SOURCE_ONLY', 'TARGET_ONLY')},
             'notice': 'Offline manifest comparison only. No cluster writes. Secret values are redacted. Volumes and database contents are not migrated.'}

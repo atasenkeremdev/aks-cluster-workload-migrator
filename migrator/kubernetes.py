@@ -3,6 +3,10 @@ import json
 import re
 import shutil
 import subprocess
+import secrets
+import time
+import threading
+from .core import normalize, reason, safe_manifest
 from .core import KINDS, PROTECTED, analyze
 
 
@@ -12,13 +16,14 @@ class ClusterError(Exception):
         self.status = status
 
 
-def run(args):
+def run(args, payload=None):
     executable = shutil.which('kubectl')
     if not executable:
         raise ClusterError('kubectl is not installed on the server.', 503)
     try:
         result = subprocess.run([executable, '--request-timeout=15s', *args],
-                                capture_output=True, text=True, timeout=25, stdin=subprocess.DEVNULL)
+                                capture_output=True, text=True, timeout=25,
+                                **({'input': json.dumps(payload)} if payload is not None else {'stdin': subprocess.DEVNULL}))
     except subprocess.TimeoutExpired:
         raise ClusterError('Cluster request timed out. Check connectivity and authentication.') from None
     except OSError:
@@ -32,6 +37,12 @@ def run(args):
             message = 'Kubernetes authentication failed. Refresh server-side credentials.'
         elif 'executable' in error or 'exec plugin' in error:
             message = 'Kubeconfig authentication plugin is missing or failed.'
+        elif 'conflict' in error:
+            message = 'Target field ownership or resource version conflict. Refresh the comparison; no forced overwrite was performed.'
+        elif 'immutable' in error or 'invalid' in error:
+            message = 'Kubernetes rejected the manifest (validation or immutable field). Check resource compatibility.'
+        elif 'notfound' in error or 'not found' in error:
+            message = 'Resource or target namespace not found. Create the target namespace before syncing.'
         else:
             message = 'kubectl failed. Check server-side kubeconfig, credentials and network access.'
         raise ClusterError(message)
@@ -118,3 +129,67 @@ def live_analyze(body):
                   unavailable_kinds={'source': src_missing, 'target': dst_missing},
                   notice='Read-only cluster snapshot. Sequential reads are not atomic. No cluster writes. Secret values are redacted; persistent data is outside scope.')
     return report
+
+
+_PLANS = {}
+_LOCK = threading.Lock()
+
+
+def sync_plan(body):
+    source, target = body['source_context'], body['target_context']
+    ns, name, kind = body['namespace'], body['name'], body['kind']
+    validate_selection(source, target, [ns])
+    if kind not in KINDS - {'Namespace'} or not isinstance(name, str) or not re.fullmatch(r'[a-z0-9][a-z0-9.-]*', name):
+        raise ValueError('Select a supported namespaced resource')
+    api = body['apiVersion']
+    if not isinstance(api, str) or not re.fullmatch(r'[a-z0-9./-]+', api):
+        raise ValueError('Invalid API version')
+    group = api.split('/')[0] if '/' in api else ''
+    resource = kind + ('.' + group if group else '')
+    src_args, dst_args = context_args(source), context_args(target)
+    obj = read_json([*src_args, '-n', ns, 'get', resource, name, '-o', 'json'])
+    if reason(obj) or obj['metadata'].get('namespace') != ns:
+        raise ValueError('Resource is excluded by migration policy')
+    target_obj = None
+    raw = run([*dst_args, '-n', ns, 'get', resource, name, '--ignore-not-found', '-o', 'json'])
+    if raw.strip():
+        try:
+            target_obj = json.loads(raw)
+        except json.JSONDecodeError:
+            raise ClusterError('Target returned invalid JSON.') from None
+    manifest = normalize(obj, body.get('old_registry', ''), body.get('new_registry', ''))
+    version = target_obj['metadata']['resourceVersion'] if target_obj else None
+    if version:
+        manifest['metadata']['resourceVersion'] = version
+    action = ['apply', '--server-side', '--field-manager=aks-migrator'] if target_obj else ['create']
+    # Admission, field conflicts, immutable fields and missing namespace fail here.
+    run([*dst_args, '-n', ns, *action, '--dry-run=server', '-f', '-', '-o', 'json'], manifest)
+    token = secrets.token_urlsafe(32)
+    plan = dict(target=target, namespace=ns, resource=resource, name=name,
+                version=version, manifest=manifest, action=action, expires=time.monotonic()+300)
+    with _LOCK:
+        for key in list(_PLANS):
+            if _PLANS[key]['expires'] < time.monotonic():
+                del _PLANS[key]
+        if len(_PLANS) >= 100:
+            raise ClusterError('Too many pending sync previews. Try again later.', 429)
+        _PLANS[token] = plan
+    return {'token': token, 'manifest': safe_manifest(manifest), 'target_context': target,
+            'operation': 'update' if target_obj else 'create', 'expires_in': 300}
+
+
+def sync_execute(body):
+    if body.get('confirm') is not True:
+        raise ValueError('Explicit confirmation is required')
+    with _LOCK:
+        plan = _PLANS.pop(body.get('token', ''), None)
+    if not plan or plan['expires'] < time.monotonic():
+        raise ValueError('Sync preview expired or already used. Preview again.')
+    args = context_args(plan['target'])
+    raw = run([*args, '-n', plan['namespace'], 'get', plan['resource'], plan['name'], '--ignore-not-found', '-o', 'json'])
+    current = json.loads(raw) if raw.strip() else None
+    version = current['metadata']['resourceVersion'] if current else None
+    if version != plan['version']:
+        raise ClusterError('Target changed after preview. Analyze and preview again.', 409)
+    run([*args, '-n', plan['namespace'], *plan['action'], '-f', '-', '-o', 'json'], plan['manifest'])
+    return {'status': 'synced', 'target_context': plan['target'], 'namespace': plan['namespace'], 'name': plan['name']}
