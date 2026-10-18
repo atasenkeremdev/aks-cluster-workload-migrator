@@ -51,9 +51,10 @@ target, namespace count, action mode, connection and current activity visible.
    downloads retain the full analysis.
 6. Click either resource name for expected source-on-target (left) and current
    target (right). Changed fields appear red and Secret values are masked.
-7. Choose **Prepare target** or **Activate** in stage three (also reachable
-   through the mode button in the sticky overview). Eligible source actions use
-   that mode and appear only for DIFF/SOURCE_ONLY. MATCH and target-only resources
+7. Choose an action beside the source resource. Configuration uses **Sync to
+   target**. Workloads offer **Prepare target** and **Activate target**; DaemonSet
+   and AMQ offer activation only because passive preparation is unsupported.
+   Actions appear only for DIFF/SOURCE_ONLY. MATCH and target-only resources
    never get action buttons. Changing scope invalidates old actions until the
    comparison is rerun.
 
@@ -77,13 +78,21 @@ StorageClasses, ingress/DNS cutover and database migration are not copied.
 
 ## Prepare, then activate
 
-Use the source resource action and review the explicit mode before confirming:
+There is no global action-mode selector. Choose the action beside a resource; a
+single review dialog shows its destination, expected effect and validation status.
+Confirmation stays disabled until server-side validation succeeds. Cancelling
+during validation cannot trigger a later write.
+
+- **Sync to target**: copy configuration such as Secrets, ConfigMaps, Services,
+  RBAC and HPA without presenting it as workload activation. HPA may immediately
+  resize target workloads; Secret backups are not stored.
+
 
 - **Prepare target / Prepare** (default): Deployment/StatefulSet replicas become 0; CronJobs
   become suspended. This can stop an existing target workload. CronJob suspend
   does not terminate already-running Jobs. ConfigMaps, Secrets and other
   configuration resources are still applied and can affect running consumers.
-- **Activate / Activate**: apply the transformed source configuration, including its replica
+- **Activate target / Activate**: apply the transformed source configuration, including its replica
   count or CronJob suspend setting. Source workloads are not stopped. Arrange
   traffic, scheduler and queue-consumer cutover to avoid duplicate processing.
 
@@ -112,8 +121,8 @@ Field-ownership conflicts and stale resourceVersion conflicts are reported
 separately. Ownership errors show the field-manager names when available;
 raw kubectl stderr and credential values are never shown.
 
-If **Activate** reports a field-ownership conflict, click **Preview guarded merge
-update** (or select **Guarded merge update** under Existing target update method).
+If **Activate** reports a field-ownership conflict, click **Review guarded update** in the same review dialog. The underlying
+update method is available under **Advanced options and technical details**.
 This is an explicit alternative, not an automatic retry with force-conflicts.
 It previews a JSON merge patch that overwrites submitted fields, preserves omitted
 target fields and replaces submitted lists in full. Review the affected resource
@@ -155,7 +164,7 @@ UID/resourceVersion preconditions. DeletionRequested is not proof finalizers hav
 completed. RollbackApplied means the restore was accepted; check readiness again.
 Rollback does not restore database/volume data, external effects or field ownership.
 
-The stage-three result summary groups the latest journaled operation per target
+The separate results/history section groups the latest journaled operation per target
 resource into passive-ready, controller-ready, failed/review and pending states.
 It reflects recorded checks, not a fresh cluster-wide health scan; use the history
 controls to refresh readiness. Confirmation highlights the exact target and the
@@ -193,5 +202,5 @@ python3 tests/browser_workspace.py
 The script uses a system Chromium when available, or Playwright's installed
 Chromium. `BROWSER_EXECUTABLE` can point at a local browser binary. It covers
 responsive layout, default difference filtering, search, stage navigation,
-namespace selection, live progress and a simulated prepare/activate/rollback
-workflow. It never writes to a real cluster.
+namespace selection, live progress and simulated configuration-sync and prepare/activate/rollback workflows,
+including inline ownership-conflict recovery and cancellation during preview. It never writes to a real cluster.

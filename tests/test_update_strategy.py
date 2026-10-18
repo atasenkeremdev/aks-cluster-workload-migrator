@@ -119,3 +119,18 @@ class UpdateStrategyTests(unittest.TestCase):
         with self.assertRaisesRegex(k.ClusterError,'configuration changed during preview'):
             k.sync_plan(self.body)
         self.assertEqual(run.call_count,4)
+
+
+    @patch('migrator.kubernetes.run')
+    def test_configuration_sync_has_its_own_action(self, run):
+        run.side_effect=[json.dumps(resource(value='new')),json.dumps(resource()),'{}']
+        plan=k.sync_plan({**self.body,'mode':'sync'})
+        self.assertEqual(plan['mode'],'sync')
+        self.assertIn('Configuration changes',plan['warnings'][0])
+
+    @patch('migrator.kubernetes.run')
+    def test_generic_sync_cannot_implicitly_activate_workload(self, run):
+        workload=resource();workload['kind']='Deployment';workload['apiVersion']='apps/v1'
+        run.side_effect=[json.dumps(workload),'']
+        with self.assertRaisesRegex(ValueError,'explicit prepare or activate'):
+            k.sync_plan({**self.body,'kind':'Deployment','apiVersion':'apps/v1','mode':'sync'})

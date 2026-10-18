@@ -19,7 +19,7 @@ def progress(message, phase="step"):
         observer(message, phase)
 
 from .core import normalize, reason, safe_manifest
-from .core import KINDS, PROTECTED, analyze
+from .core import KINDS, WORKLOAD_KINDS, PROTECTED, analyze
 from . import history
 from .readiness import evaluate
 from .dependencies import references
@@ -222,8 +222,10 @@ def sync_plan(body):
     if strategy not in ('apply', 'merge'):
         raise ValueError('Select server-side apply or guarded merge update')
     mode = body.get('mode', 'prepare')
-    if mode not in ('prepare', 'activate'):
-        raise ValueError('Select prepare or activate mode')
+    if mode not in ('prepare', 'activate', 'sync'):
+        raise ValueError('Select sync, prepare or activate')
+    if mode == 'sync' and kind in WORKLOAD_KINDS:
+        raise ValueError('Workloads require an explicit prepare or activate action')
     if mode == 'prepare' and kind in ('DaemonSet', 'ActiveMQArtemis', 'HorizontalPodAutoscaler'):
         raise ValueError('Passive preparation is unsupported for this kind. Review dependencies and explicitly select activation.')
     manifest = normalize(obj, body.get('old_registry', ''), body.get('new_registry', ''))
@@ -285,7 +287,7 @@ def sync_plan(body):
     return {'token': token, 'manifest': safe_manifest(manifest), 'target_context': target,
             'operation': 'update' if target_obj else 'create', 'mode': mode, 'strategy': strategy,
             'update_effect': 'Guarded merge overwrites submitted fields, preserves omitted target fields and replaces lists as a whole. HPA or GitOps may change fields again.' if strategy == 'merge' else 'Server-side apply respects existing field ownership; ownership conflicts stop the update.',
-            'warnings': ['Preparation can stop an existing target workload. Activation may duplicate source processing. CronJob suspend does not stop already running jobs.',
+            'warnings': ['Configuration changes may affect running workloads.' if mode == 'sync' else 'Preparation can stop an existing target workload. Activation may duplicate source processing. CronJob suspend does not stop already running jobs.',
                          'Reference existence is checked; image pull, Workload Identity, network access, data integrity and application health require separate validation.',
                          'Secret rollback backups are not stored.' if kind == 'Secret' else 'A local rollback snapshot will be saved.'],
             'expires_in': 300}

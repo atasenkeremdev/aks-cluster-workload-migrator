@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-let report, analyzedPayload, selectedRow, pendingPlan, pendingRollback=false;
+let report, analyzedPayload, selectedRow, pendingPlan, pendingRollback=false, activeReview=null, reviewGeneration=0;
 let reportScope=null, scopeStale=false, connectionState='Connection pending', writeInFlight=false, previewInFlight=false;
 const statusLabels={MATCH:'Match',DIFF:'Different',SOURCE_ONLY:'Source only',TARGET_ONLY:'Target only'};
 $('demo').onclick = () => {
@@ -49,18 +49,68 @@ $('load-namespaces').onclick=async()=>{const context=$('src').value.trim();$('lo
 
 
 function flat(value,path='',out={}){if(value!==null && typeof value==='object'){const entries=Object.entries(value);if(!entries.length)out[path]=JSON.stringify(value);for(const [key,v] of entries)flat(v,path+'/'+key.replaceAll('~','~0').replaceAll('/','~1'),out);}else out[path]=JSON.stringify(value);return out;}
-function showVersus(row){selectedRow=row;$('versus').hidden=false;$('versus-title').textContent=row.kind+' / '+(row.namespace||'cluster')+' / '+row.name;$('sync-status').textContent='';$('preview-guarded').hidden=true;$('sync').hidden=!canSync(row);updateActionLabels();highlightSelection();$('diff-paths').textContent='Changed fields: '+(row.diff_paths.join(', ')||'None');
+function showVersus(row){selectedRow=row;$('versus').hidden=false;$('versus-title').textContent=row.kind+' / '+(row.namespace||'cluster')+' / '+row.name;$('sync-status').textContent='';$('selected-actions').replaceChildren();if(canSync(row))$('selected-actions').append(actionButtons(row));$('action-explanation').textContent=isWorkload(row)?'Prepare without starting replicas, or activate using the source configuration.':'Sync this configuration resource to the selected target.';highlightSelection();$('diff-paths').textContent='Changed fields: '+(row.diff_paths.join(', ')||'None');
 const a=row.manifest?flat(row.manifest):{}, b=row.target_manifest?flat(row.target_manifest):{};const paths=[...new Set([...Object.keys(a),...Object.keys(b)])].sort();
 for(const [id,values] of [['source-preview',a],['target-preview',b]]){$(id).replaceChildren();if(!paths.length)$(id).textContent='Resource absent on this side';for(const path of paths){const line=document.createElement('div');line.textContent=path+' = '+(values[path]??'— absent');if(a[path]!==b[path]||row.diff_paths.some(p=>path===p||path.startsWith(p+'/')))line.className='diff-line';$(id).append(line);}}
 }
-async function prepareSync(){if(writeInFlight||previewInFlight||!selectedRow||!canSync(selectedRow))return;previewInFlight=true;$('overview-activity').textContent='Validating preview…';const row=selectedRow,requestedMode=$('sync-mode').value;$('preview-guarded').hidden=true;setStep('execute');$('sync').disabled=true;$('sync-status').textContent='Reading the current resource and validating a server-side dry-run…';try{pendingRollback=false;pendingPlan=await clusterRequest('/api/sync/plan',{...analyzedPayload,namespace:row.namespace,name:row.name,kind:row.kind,apiVersion:row.apiVersion,mode:requestedMode,strategy:$('update-strategy').value});$('confirm-title').textContent=pendingPlan.mode==='prepare'?'Confirm passive preparation':'Confirm activation';$('sync-confirm').textContent=pendingPlan.mode==='prepare'?'Confirm preparation':'Confirm activation';$('sync-confirm').classList.toggle('activate-action',pendingPlan.mode==='activate');$('confirm-impact').textContent=pendingPlan.mode==='prepare'?prepareImpact(row):'The source configuration will be applied and target workloads may start. The source is not stopped; review duplicate processing and traffic cutover.'; $('sync-warnings').textContent=[pendingPlan.update_effect,...(pendingPlan.warnings||[])].filter(Boolean).join(' ');$('sync-description').textContent=(pendingPlan.operation==='create'?'CREATE':'UPDATE')+' '+row.kind+'/'+row.name+' → '+pendingPlan.target_context+' / '+row.namespace+' · Preview expires in 5 minutes';$('sync-manifest').textContent=JSON.stringify(pendingPlan.manifest,null,2);$('sync-dialog').showModal();$('overview-activity').textContent='Awaiting confirmation';$('sync-status').textContent='Server-side validation passed. Review the preview before confirming.';}catch(error){$('overview-activity').textContent='Preview failed';$('sync-status').textContent=error.message;$('preview-guarded').hidden=error.category!=='field_ownership';$('versus').scrollIntoView({block:'start'});}finally{previewInFlight=false;$('sync').disabled=false;}}
-$('sync').onclick=prepareSync;
-$('sync-cancel').onclick=()=>{pendingPlan=null;$('overview-activity').textContent='Preview cancelled';$('sync-dialog').close();};
+function isWorkload(row){return ['Deployment','StatefulSet','DaemonSet','CronJob','ActiveMQArtemis'].includes(row.kind);}
+function actionButtons(row){
+ const group=document.createDocumentFragment();
+ const actions=isWorkload(row)?(['Deployment','StatefulSet','CronJob'].includes(row.kind)?['prepare','activate']:['activate']):['sync'];
+ for(const action of actions){const block=document.createElement('div');block.className='action-choice';const button=document.createElement('button');button.type='button';button.dataset.sync='true';button.dataset.action=action;button.textContent=actionText(action);button.classList.toggle('activate-action',action==='activate');button.onclick=()=>{showVersus(row);openReview(row,action);};block.append(button);const hint=document.createElement('small');hint.textContent=action==='prepare'?(row.kind==='CronJob'?'Suspend scheduled jobs':'Set replicas to zero'):action==='activate'?'May start target workloads':'Copy configuration';block.append(hint);group.append(block);}
+ return group;
+}
+function actionText(action){return action==='prepare'?'Prepare target':action==='activate'?'Activate target':'Sync to target';}
+function openReview(row,action){
+ if(writeInFlight||previewInFlight||!canSync(row))return;
+ pendingRollback=false;pendingPlan=null;activeReview={row,action,base:structuredClone(analyzedPayload),scope:scopeFingerprint()};
+ $('update-strategy').value='apply';$('strategy-control').hidden=false;$('review-advanced').open=false;$('review-manifest').open=false;
+ $('confirm-title').textContent=action==='sync'?'Review configuration sync':action==='prepare'?'Review passive preparation':'Review activation';
+ $('sync-confirm').textContent=actionText(action);$('sync-confirm').classList.toggle('activate-action',action==='activate');
+ $('sync-description').textContent=row.kind+'/'+row.name+' → '+activeReview.base.target_context+' / '+row.namespace;
+ $('confirm-impact').textContent=action==='sync'?syncImpact(row):action==='prepare'?prepareImpact(row):'Apply the source workload configuration and allow it to run on the target. The source stays running; coordinate traffic and duplicate processing.';
+ $('sync-dialog').showModal();validateReview();
+}
+async function validateReview(){
+ if(!activeReview||writeInFlight)return;
+ const generation=++reviewGeneration,review=activeReview;
+ pendingPlan=null;previewInFlight=true;$('sync-confirm').disabled=true;$('review-conflict').hidden=true;$('preview-guarded').hidden=true;$('retry-preview').hidden=true;$('review-error').textContent='';$('sync-manifest').textContent='';$('sync-warnings').textContent='';$('review-status').textContent='Checking the target and validating this change…';$('overview-activity').textContent='Validating preview…';
+ try{
+  if(scopeFingerprint()!==review.scope)throw Error('Scope changed. Close this review and run analysis again.');
+  const plan=await clusterRequest('/api/sync/plan',{...review.base,namespace:review.row.namespace,name:review.row.name,kind:review.row.kind,apiVersion:review.row.apiVersion,mode:review.action==='sync'?'sync':review.action,strategy:$('update-strategy').value});
+  if(generation!==reviewGeneration||!$('sync-dialog').open)return;
+  pendingPlan=plan;$('sync-manifest').textContent=JSON.stringify(plan.manifest,null,2);$('sync-warnings').textContent=[plan.update_effect,...(plan.warnings||[])].filter(Boolean).join(' ');
+  $('review-status').textContent='Validation passed. Review the effect above, then confirm. Preview expires in 5 minutes.';$('sync-confirm').disabled=false;$('overview-activity').textContent='Awaiting confirmation';
+ }catch(error){
+  if(generation!==reviewGeneration||!$('sync-dialog').open)return;
+  displayReviewError(error);
+ }finally{if(generation===reviewGeneration)previewInFlight=false;}
+}
+function cancelReview(){pendingPlan=null;activeReview=null;reviewGeneration++;previewInFlight=false;$('overview-activity').textContent='Preview cancelled';$('sync-dialog').close();}
+$('sync-cancel').onclick=cancelReview;
+$('update-strategy').onchange=()=>{if(activeReview)validateReview();};
+function displayReviewError(error,afterWrite=false){
+ $('review-status').textContent='This change needs review before it can be applied.';$('review-conflict').hidden=false;$('review-error').textContent=error.message;
+ const managers=error.message.match(/Field manager\(s\): (.*?)\. Nothing/);
+ $('conflict-summary').textContent=error.category==='field_ownership'?(managers?'Target fields are managed by '+managers[1]+'. Review a guarded update?':'Another manager owns target fields. Review a guarded update?'):error.message;
+ const rejected=['field_ownership','resource_version'].includes(error.category);
+ $('conflict-note').textContent=afterWrite&&!rejected?'Inspect the target and operation history before retrying; the write outcome may be uncertain.':'No changes have been applied.';
+ $('preview-guarded').hidden=error.category!=='field_ownership'||!activeReview;
+ $('retry-preview').hidden=error.category!=='resource_version'||!activeReview;
+ $('overview-activity').textContent='Review needed';$('sync-confirm').disabled=true;
+}
+$('retry-preview').onclick=validateReview;
 $('sync-confirm').onclick=async()=>{
- if(!pendingPlan||writeInFlight)return;writeInFlight=true;$('overview-activity').textContent=pendingRollback?'Rolling back…':'Applying to target…';$('sync-confirm').disabled=true;$('sync-cancel').disabled=true;
- try{const result=await clusterRequest(pendingRollback?'/api/rollback/execute':'/api/sync/execute',{token:pendingPlan.token,confirm:true});pendingPlan=null;$('sync-dialog').close();$('overview-activity').textContent=result.status;$('sync-status').textContent=result.status+' · Run analysis again to refresh the comparison.';await loadHistory();if(result.status==='Applied')trackReadiness(result.operation_id);}
- catch(error){$('sync-dialog').close();pendingPlan=null;$('overview-activity').textContent='Inspect the operation outcome';$('sync-status').textContent=error.message;$('preview-guarded').hidden=error.category!=='field_ownership';await loadHistory();}
- finally{writeInFlight=false;$('sync-confirm').disabled=false;$('sync-cancel').disabled=false;updateActionLabels();}
+ if(!pendingPlan||writeInFlight)return;
+ writeInFlight=true;$('update-strategy').disabled=true;$('overview-activity').textContent=pendingRollback?'Rolling back…':'Applying to target…';$('sync-confirm').disabled=true;$('sync-cancel').disabled=true;
+ try{
+  const result=await clusterRequest(pendingRollback?'/api/rollback/execute':'/api/sync/execute',{token:pendingPlan.token,confirm:true});
+  pendingPlan=null;activeReview=null;$('sync-dialog').close();$('overview-activity').textContent=result.status;$('sync-status').textContent=result.status+' · Run analysis again to refresh the comparison.';
+  await loadHistory();if(result.status==='Applied')trackReadiness(result.operation_id);
+ }catch(error){
+  pendingPlan=null;if(!['field_ownership','resource_version'].includes(error.category))activeReview=null;
+  displayReviewError(error,true);$('sync-status').textContent=error.message;await loadHistory();
+ }finally{writeInFlight=false;$('update-strategy').disabled=false;$('sync-confirm').disabled=!pendingPlan;$('sync-cancel').disabled=false;updateActionLabels();}
 };
 
 
@@ -107,7 +157,7 @@ function renderResources(){
     for(const side of ['source','target']){
       const td=document.createElement('td'),manifest=side==='source'?row.manifest:row.target_manifest;
       if(manifest){const name=document.createElement('button');name.type='button';name.className='resource-name';name.textContent=row.name;name.onclick=()=>{showVersus(row);$('versus').scrollIntoView({block:'start'});};td.append(name);const meta=document.createElement('div');meta.className='resource-meta';meta.textContent=row.kind+' · '+(row.namespace||'cluster');td.append(meta);
-        if(side==='source'&&canSync(row)){const actions=document.createElement('div');actions.className='row-actions';const action=document.createElement('button');action.type='button';action.dataset.sync='true';action.textContent=actionLabel();action.classList.toggle('activate-action',$('sync-mode').value==='activate');action.onclick=()=>{showVersus(row);prepareSync();};actions.append(action);td.append(actions);}
+        if(side==='source'&&canSync(row)){const actions=document.createElement('div');actions.className='row-actions';actions.append(actionButtons(row));td.append(actions);}
       }else{const absent=document.createElement('span');absent.className='resource-absent';absent.textContent='Absent on this side';td.append(absent);const meta=document.createElement('div');meta.className='resource-meta';meta.textContent=row.kind+' · '+(row.namespace||'cluster');td.append(meta);}
       tr.append(td);
     }
@@ -125,7 +175,7 @@ async function loadHistory(){
  try{const data=await clusterRequest('/api/history');$('history-rows').replaceChildren();for(const op of data.operations){const tr=document.createElement('tr');for(const text of [new Date(op.updated_at).toLocaleString()+' / '+op.mode,op.target+' / '+op.namespace+' / '+op.kind+'/'+op.name,op.status+(op.health?' · '+op.health.state+' — '+op.health.detail:'')]){const td=document.createElement('td');td.textContent=text;tr.append(td);}const actions=document.createElement('td');if(op.applied_uid&&op.status!=='RolledBack'){const health=document.createElement('button');health.textContent='Check readiness';health.onclick=async()=>{health.disabled=true;try{const result=await clusterRequest('/api/operations/health',{operation_id:op.id});$('history-status').textContent=result.state+' — '+result.detail;await loadHistory();}catch(error){$('history-status').textContent=error.message;}finally{health.disabled=false;}};actions.append(health);}if(op.rollback_available){const rollback=document.createElement('button');rollback.textContent='Preview rollback';rollback.onclick=()=>prepareRollback(op.id);actions.append(rollback);}tr.append(actions);$('history-rows').append(tr);}renderOutcomes(data.operations);$('history-status').textContent=data.operations.length+' recent operations loaded. These are recorded checks; refresh readiness for current state.';}catch(error){$('history-status').textContent=error.message;}
 }
 $('load-history').onclick=loadHistory;
-async function prepareRollback(id){if(writeInFlight||previewInFlight)return;previewInFlight=true;$('overview-activity').textContent='Preparing rollback preview…';setStep('execute');try{pendingPlan=await clusterRequest('/api/rollback/plan',{operation_id:id});pendingRollback=true;$('confirm-title').textContent='Confirm rollback';$('confirm-impact').textContent=pendingPlan.operation==='restore'?'The pre-sync target configuration will be restored. This may change a running workload.':'The target resource created by this sync will be deleted. Data and external effects are not restored.';$('sync-confirm').classList.add('activate-action');$('sync-confirm').textContent='Confirm rollback';$('sync-description').textContent=pendingPlan.operation+' '+pendingPlan.kind+'/'+pendingPlan.name+' → '+pendingPlan.target_context+' / '+pendingPlan.namespace;$('sync-manifest').textContent=pendingPlan.manifest?JSON.stringify(pendingPlan.manifest,null,2):'Delete the resource created by this sync (UID and resourceVersion preconditions).';$('sync-warnings').textContent=pendingPlan.warning;$('sync-dialog').showModal();}catch(error){$('history-status').textContent=error.message;}finally{previewInFlight=false;}}
+async function prepareRollback(id){if(writeInFlight||previewInFlight)return;previewInFlight=true;activeReview=null;reviewGeneration++;$('strategy-control').hidden=true;$('review-advanced').open=false;$('review-manifest').open=false;$('review-conflict').hidden=true;$('review-error').textContent='';$('review-status').textContent='Review this rollback before confirming.';$('overview-activity').textContent='Preparing rollback preview…';setStep('execute');try{pendingPlan=await clusterRequest('/api/rollback/plan',{operation_id:id});pendingRollback=true;$('confirm-title').textContent='Confirm rollback';$('confirm-impact').textContent=pendingPlan.operation==='restore'?'The pre-sync target configuration will be restored. This may change a running workload.':'The target resource created by this sync will be deleted. Data and external effects are not restored.';$('sync-confirm').classList.add('activate-action');$('sync-confirm').textContent='Confirm rollback';$('sync-description').textContent=pendingPlan.operation+' '+pendingPlan.kind+'/'+pendingPlan.name+' → '+pendingPlan.target_context+' / '+pendingPlan.namespace;$('sync-manifest').textContent=pendingPlan.manifest?JSON.stringify(pendingPlan.manifest,null,2):'Delete the resource created by this sync (UID and resourceVersion preconditions).';$('sync-warnings').textContent=pendingPlan.warning;$('sync-confirm').disabled=false;$('sync-dialog').showModal();}catch(error){$('history-status').textContent=error.message;}finally{previewInFlight=false;}}
 async function trackReadiness(id){for(let attempt=0;attempt<12;attempt++){try{const result=await clusterRequest('/api/operations/health',{operation_id:id});$('overview-activity').textContent=result.state;$('sync-status').textContent=result.state+' — '+result.detail;await loadHistory();if(result.state!=='RollingOut')return;}catch(error){$('sync-status').textContent='Applied; readiness check failed: '+error.message;return;}await new Promise(resolve=>setTimeout(resolve,5000));}$('sync-status').textContent='Still rolling out. Use Check readiness in operation history to continue monitoring.';}
 
 function canSync(row){return Boolean(analyzedPayload && !scopeStale && row.manifest && row.kind!=='Namespace' && ['DIFF','SOURCE_ONLY'].includes(row.status));}
@@ -167,18 +217,15 @@ renderNamespaces();
 
 function scopeFingerprint(){return JSON.stringify([$('mode').value,$('src').value,$('dst').value,[...selectedNamespaces].sort(),$('old').value.trim(),$('new').value.trim(),$('mode').value==='offline'?[$('source').value,$('target').value]:null]);}
 function updateOverview(){
-  $('overview-source').textContent=$('src').value||'Select a source';$('overview-target').textContent=$('dst').value||'Select a target';$('overview-namespaces').textContent=selectedNamespaces.size+' namespace';$('overview-mode').textContent=actionLabel();$('overview-connection').textContent=connectionState;$('overview-connection').classList.toggle('connected',connectionState==='Both clusters read'||connectionState==='Source reachable');
-  const stale=Boolean(report&&reportScope&&scopeFingerprint()!==reportScope);if(stale!==scopeStale){scopeStale=stale;$('scope-stale').hidden=!stale;renderResources();if(selectedRow)$('sync').hidden=!canSync(selectedRow);}
+  $('overview-source').textContent=$('src').value||'Select a source';$('overview-target').textContent=$('dst').value||'Select a target';$('overview-namespaces').textContent=selectedNamespaces.size+' namespace';$('overview-connection').textContent=connectionState;$('overview-connection').classList.toggle('connected',connectionState==='Both clusters read'||connectionState==='Source reachable');
+  const stale=Boolean(report&&reportScope&&scopeFingerprint()!==reportScope);if(stale!==scopeStale){scopeStale=stale;$('scope-stale').hidden=!stale;renderResources();if(selectedRow){$('selected-actions').replaceChildren();if(canSync(selectedRow))$('selected-actions').append(actionButtons(selectedRow));}}
 }
-function actionLabel(){return $('sync-mode').value==='activate'?'Activate':'Prepare target';}
-function updateActionLabels(){for(const button of document.querySelectorAll('[data-sync],#sync')){button.textContent=actionLabel();button.classList.toggle('activate-action',$('sync-mode').value==='activate');button.disabled=writeInFlight;}const active=$('sync-mode').value==='activate';$('mode-explanation').textContent=active?'The source configuration is applied to the target. Plan duplicate processing and traffic cutover; the source is not stopped automatically.':'Deployment/StatefulSet replicas become zero and CronJobs are suspended. Existing target workloads may stop.';$('action-explanation').textContent=active?'Activation requires a server-side dry-run and your confirmation.':'Preparation can stop an existing target workload. Review the preview carefully.';}
-$('sync-mode').onchange=()=>{updateActionLabels();updateOverview();};
+function updateActionLabels(){for(const button of document.querySelectorAll('[data-sync]'))button.disabled=writeInFlight;}
 function resourceKey(row){return JSON.stringify([row.apiVersion,row.kind,row.namespace,row.name]);}
 function highlightSelection(){for(const tr of document.querySelectorAll('.resource-row'))tr.classList.toggle('selected',Boolean(selectedRow)&&tr.dataset.key===resourceKey(selectedRow));}
 function setStep(name){for(const key of ['scope','compare','execute']){const active=key===name;$('step-'+key).classList.toggle('active',active);if(active)$('step-'+key).setAttribute('aria-current','step');else $('step-'+key).removeAttribute('aria-current');}}
 $('step-scope').onclick=()=>{$('scope').open=true;setStep('scope');$('scope').scrollIntoView({block:'start'});};
 $('step-compare').onclick=()=>{setStep('compare');$('results').scrollIntoView({block:'start'});};
-$('overview-mode').onclick=()=>$('step-execute').click();
 $('step-execute').onclick=()=>{setStep('execute');$('operations').scrollIntoView({block:'start'});};
 $('close-versus').onclick=()=>{$('versus').hidden=true;selectedRow=null;highlightSelection();};
 for(const id of ['src','dst','old','new','source','target'])$(id).addEventListener('change',()=>{if(id==='src'||id==='dst')connectionState='Connection not verified';updateOverview();});
@@ -187,10 +234,12 @@ function renderOutcomes(operations){
  for(const op of operations||[]){const key=JSON.stringify([op.target,op.namespace,op.kind,op.name]);if(seen.has(key))continue;seen.add(key);const state=op.health?.state;if(op.status==='RolledBack'||state==='Deleted')continue;if(['Unknown','RollbackUnknown','Conflict'].includes(op.status)||state==='Failed'||state==='Drifted')counts.failed++;else if(state==='Prepared')counts.prepared++;else if(state==='Ready')counts.ready++;else counts.pending++;}
  $('outcome-summary').replaceChildren();for(const [key,label] of [['prepared','Prepared'],['ready','Controller ready'],['failed','Failed / review'],['pending','Pending checks']]){const box=document.createElement('div');box.className='outcome-item';const n=document.createElement('strong');n.textContent=operations?counts[key]:'—';box.append(n,document.createTextNode(label));$('outcome-summary').append(box);}
 }
-$('sync-dialog').addEventListener('cancel',event=>{if(writeInFlight)event.preventDefault();else{pendingPlan=null;$('overview-activity').textContent='Preview cancelled';}});
+$('sync-dialog').addEventListener('cancel',event=>{if(writeInFlight)event.preventDefault();else cancelReview();});
 $('mode').onchange();updateActionLabels();renderOutcomes(null);
 
 function prepareImpact(row){if(['Deployment','StatefulSet'].includes(row.kind))return 'Target '+row.kind+' replicas will become zero. Existing target workloads may stop; the source is unchanged.';if(row.kind==='CronJob')return 'The target CronJob will be suspended. Running Jobs are not stopped; the source is unchanged.';return 'Selected '+row.kind+' will be applied to the target. Preparation does not deactivate configuration; running workloads may be affected.';}
 new ResizeObserver(entries=>document.documentElement.style.setProperty('--bar-height',entries[0].target.getBoundingClientRect().height+'px')).observe(document.querySelector('.migration-bar'));
 
-$('preview-guarded').onclick=()=>{$('update-strategy').value='merge';prepareSync();};
+$('preview-guarded').onclick=()=>{$('update-strategy').value='merge';validateReview();};
+
+function syncImpact(row){if(row.kind==='Secret')return 'Sync this Secret to the target. Running applications may be affected. Secret rollback backups are not stored.';if(row.kind==='HorizontalPodAutoscaler')return 'Sync this autoscaling configuration to the target. It may immediately change workload replica counts.';return 'Copy this configuration to the target. Running applications that consume it may be affected.';}

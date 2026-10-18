@@ -19,13 +19,13 @@
   <header class="workspace-header"><span>WORKLOAD MIGRATION</span><span class="local-badge">● Local workspace</span></header>
   <section class="migration-bar" aria-label="Migration overview">
     <div class="route"><div><span class="eyebrow">SOURCE</span><strong id="overview-source">Select a source</strong></div><span class="route-arrow">→</span><div><span class="eyebrow">TARGET</span><strong id="overview-target">Select a target</strong></div></div>
-    <div class="overview-meta"><span id="overview-namespaces">0 namespace</span><button id="overview-mode" type="button" title="Change action mode">Prepare target</button><span id="overview-activity" role="status">No operation running</span><span id="overview-connection" class="connection-badge">Connection pending</span></div>
+    <div class="overview-meta"><span id="overview-namespaces">0 namespace</span><span id="overview-activity" role="status">No operation running</span><span id="overview-connection" class="connection-badge">Connection pending</span></div>
   </section>
   <div class="page-heading"><div><span class="eyebrow">MIGRATION WORKSPACE</span><h1>Compare. Prepare. Migrate.</h1><p class="muted">Review differences, then apply only the resources you choose.</p></div></div>
   <nav class="steps" aria-label="Migration stages">
     <button id="step-scope" type="button" class="step active" aria-current="step"><span>1</span><div><strong>Select scope</strong><small>Clusters and namespaces</small></div></button>
     <button id="step-compare" type="button" class="step" disabled><span>2</span><div><strong>Compare</strong><small>Review differences side by side</small></div></button>
-    <button id="step-execute" type="button" class="step"><span>3</span><div><strong>Prepare / Activate</strong><small>Preview, confirm and monitor</small></div></button>
+    <button id="step-execute" type="button" class="step"><span>3</span><div><strong>Review outcomes</strong><small>Readiness and operation history</small></div></button>
   </nav>
   <form id="planner">
     <details id="scope" class="card scope-card" open>
@@ -68,24 +68,36 @@
         <div class="title"><div><span class="eyebrow">SELECTED RESOURCE</span><h3 id="versus-title"></h3></div><button id="close-versus" type="button">Close ×</button></div>
         <div class="versus-grid"><div><h3>Source · expected target manifest</h3><pre id="source-preview"></pre></div><div><h3>Target · current manifest</h3><pre id="target-preview"></pre></div></div>
         <details><summary>Changed field paths</summary><p id="diff-paths" class="muted"></p></details>
-        <div class="resource-action"><span id="action-explanation" class="muted"></span><button id="sync" type="button" class="primary">Prepare target</button></div>
-        <p id="sync-status" role="status"></p><button id="preview-guarded" type="button" hidden>Preview guarded merge update</button>
+        <div class="resource-action"><span id="action-explanation" class="muted"></span><div id="selected-actions" class="row-actions"></div></div>
+        <p id="sync-status" role="status"></p>
       </section>
       <details class="technical"><summary id="skip-count"></summary><ul id="skipped"></ul></details>
       <details class="technical"><summary>Scope and analysis limitations</summary><p id="report-notice" class="muted"></p></details>
     </div>
   </section>
   <section class="card" id="operations">
-    <div class="section-heading"><div><span class="eyebrow">03 / PREPARE AND ACTIVATE</span><h2>A controlled cutover.</h2></div><button id="load-history" type="button">Refresh history</button></div>
-    <div class="execution-mode"><label>Action mode<select id="sync-mode"><option value="prepare">Prepare target</option><option value="activate">Activate</option></select></label><p id="mode-explanation" class="muted">Deployment/StatefulSet replicas become zero and CronJobs are suspended. Existing target workloads may stop.</p></div>
-    <label class="strategy-field">Existing target update method<select id="update-strategy"><option value="apply">Server-side apply · respect field ownership</option><option value="merge">Guarded merge update · overwrite submitted fields</option></select></label><p class="muted">Guarded merge preserves omitted target fields but replaces submitted lists. It requires a fresh preview and confirmation. Reconcile HPA / GitOps ownership before cutover.</p><p class="muted">Resource actions use this mode. The source is not stopped automatically; traffic and data cutover must be managed separately.</p>
+    <div class="section-heading"><div><span class="eyebrow">03 / RESULTS AND HISTORY</span><h2>Operations and readiness.</h2></div><button id="load-history" type="button">Refresh history</button></div>
+    <p class="muted">Choose an action beside a resource, review its effect, then confirm. Configuration resources sync directly; workloads offer preparation and activation. The source cluster is never stopped automatically.</p>
     <div id="outcome-summary" class="outcome-summary" aria-label="Operation outcome summary"></div>
     <p id="history-status" class="muted" role="status">Refresh history to see operations and readiness checks.</p>
     <details id="history-details"><summary>Operation history and rollback</summary><div class="table-wrap"><table><thead><tr><th>Time / mode</th><th>Target resource</th><th>Status</th><th>Actions</th></tr></thead><tbody id="history-rows"></tbody></table></div></details>
     <p class="footnote">Applied means API acceptance. Ready means controller readiness, not application health. Secret rollback backups are not stored.</p>
   </section>
 </main>
-<dialog id="sync-dialog" aria-labelledby="confirm-title"><div class="dialog-header"><span class="eyebrow">FINAL REVIEW</span><h2 id="confirm-title">Confirm target change</h2></div><p id="sync-description" class="confirm-destination"></p><p id="confirm-impact" class="warning"></p><details><summary>Manifest to apply · Secret values are redacted</summary><pre id="sync-manifest"></pre></details><p id="sync-warnings" class="muted"></p><div class="dialog-actions"><button id="sync-cancel" type="button">Cancel</button><button id="sync-confirm" type="button" class="primary">Confirm</button></div></dialog>
+<dialog id="sync-dialog" aria-labelledby="confirm-title">
+  <div class="dialog-header"><span class="eyebrow">REVIEW TARGET CHANGE</span><h2 id="confirm-title">Review resource update</h2></div>
+  <p id="sync-description" class="confirm-destination"></p>
+  <p id="confirm-impact" class="warning"></p>
+  <p id="review-status" role="status">Validating target…</p>
+  <section id="review-conflict" class="warning" hidden><strong id="conflict-summary"></strong><p id="conflict-note">No changes have been applied.</p><button id="retry-preview" type="button" hidden>Refresh preview</button><button id="preview-guarded" type="button" hidden>Review guarded update</button></section>
+  <details id="review-advanced"><summary>Advanced options and technical details</summary>
+    <label id="strategy-control">Existing target update method<select id="update-strategy"><option value="apply">Server-side apply · respect field ownership</option><option value="merge">Guarded merge update · overwrite submitted fields</option></select></label>
+    <p class="muted">Guarded updates preserve omitted fields but replace submitted lists. A new server-side preview is required before confirmation.</p>
+    <p id="review-error" class="muted"></p><p id="sync-warnings" class="muted"></p>
+  </details>
+  <details id="review-manifest"><summary>Manifest preview · Secret values are redacted</summary><pre id="sync-manifest"></pre></details>
+  <div class="dialog-actions"><button id="sync-cancel" type="button">Cancel</button><button id="sync-confirm" type="button" class="primary" disabled>Confirm</button></div>
+</dialog>
 <script src="/app.js"></script>
 </body>
 </html>

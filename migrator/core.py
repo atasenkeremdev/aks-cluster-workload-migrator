@@ -5,6 +5,7 @@ KINDS = {'Namespace', 'Deployment', 'StatefulSet', 'DaemonSet', 'CronJob',
          'Service', 'ConfigMap', 'Secret', 'ServiceAccount', 'Role', 'RoleBinding',
          'PodDisruptionBudget', 'HorizontalPodAutoscaler', 'NetworkPolicy',
          'ActiveMQArtemis'}
+WORKLOAD_KINDS = {'Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'ActiveMQArtemis'}
 PROTECTED = {'elastic-agent', 'kube-system', 'kube-public', 'kube-node-lease'}
 RUNTIME = ('uid', 'resourceVersion', 'creationTimestamp', 'managedFields', 'generation', 'ownerReferences')
 ANNOTATIONS = ('kubectl.kubernetes.io/last-applied-configuration', 'deployment.kubernetes.io/revision')
