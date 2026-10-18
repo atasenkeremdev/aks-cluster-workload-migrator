@@ -44,7 +44,7 @@ def contexts():
 
 def context_args(context):
     if not isinstance(context, str) or context not in contexts()['contexts']:
-        raise ValueError('Select a context available in the server kubeconfig')
+        raise ClusterError('Selected context is not present in the server kubeconfig. Click Load cluster contexts and select an exact name.', 400)
     return ['--context', context]
 
 
@@ -104,8 +104,15 @@ def snapshot(context, selected):
 def live_analyze(body):
     source, target, selected = body['source_context'], body['target_context'], body['namespaces']
     validate_selection(source, target, selected)
-    src, src_missing = snapshot(source, selected)
-    dst, dst_missing = snapshot(target, selected)
+    snapshots = []
+    for side, context in [('Source', source), ('Target', target)]:
+        try:
+            snapshots.append(snapshot(context.strip(), selected))
+        except ClusterError as error:
+            raise ClusterError(f'{side} cluster: {error}', error.status) from None
+        except (KeyError, TypeError, AttributeError, ValueError):
+            raise ClusterError(f'{side} cluster returned an unexpected resource structure.') from None
+    (src, src_missing), (dst, dst_missing) = snapshots
     report = analyze(src, dst, selected, body.get('old_registry', ''), body.get('new_registry', ''))
     report.update(source_context=source, target_context=target,
                   unavailable_kinds={'source': src_missing, 'target': dst_missing},

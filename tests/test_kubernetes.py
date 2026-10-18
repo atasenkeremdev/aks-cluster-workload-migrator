@@ -61,3 +61,18 @@ class ClusterTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class DiagnosticTests(unittest.TestCase):
+    @patch('migrator.kubernetes.run', return_value='aks-dev\n')
+    def test_unknown_context_has_actionable_message(self, _):
+        with self.assertRaises(k.ClusterError) as error:
+            k.context_args('nl-aks-dev')
+        self.assertEqual(error.exception.status, 400)
+        self.assertIn('Load cluster contexts', str(error.exception))
+
+    @patch('migrator.kubernetes.snapshot')
+    def test_target_error_identifies_side(self, snapshot):
+        snapshot.side_effect = [([], []), k.ClusterError('Forbidden')]
+        with self.assertRaises(k.ClusterError) as error:
+            k.live_analyze({'source_context':'src', 'target_context':'dst', 'namespaces':['demo']})
+        self.assertEqual(str(error.exception), 'Target cluster: Forbidden')

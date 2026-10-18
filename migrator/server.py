@@ -21,6 +21,7 @@ class Handler(BaseHTTPRequestHandler):
             data = (WEB / name).read_bytes()
             self.send_response(200)
             self.send_header('Content-Type', {'html': 'text/html; charset=utf-8', 'js': 'text/javascript', 'css': 'text/css'}[name.split('.')[-1]])
+            self.send_header('Cache-Control', 'no-store')
             self.send_header('Content-Length', str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -55,7 +56,11 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, result)
         except ClusterError as error:
             self.reply(error.status, {'error': str(error)})
-        except (ValueError, KeyError, TypeError, AttributeError):
+        except json.JSONDecodeError:
+            self.reply(400, {'error': 'Request body must contain valid JSON.'})
+        except ValueError as error:
+            self.reply(400, {'error': str(error)})
+        except (KeyError, TypeError, AttributeError):
             self.reply(400, {'error': 'Invalid input. Check manifests, contexts and namespace selection.'})
 
 
