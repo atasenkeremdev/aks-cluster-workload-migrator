@@ -172,6 +172,66 @@ class WorkspaceBrowserTests(unittest.TestCase):
         page.wait_for_function("document.querySelector('#overview-activity').textContent==='Applied'")
         self.assertEqual(writes,[{'token':'second','confirm':True}])
 
+    def test_bulk_actions_filter_validation_and_partial_failure(self):
+        page=self.page
+        def obj(kind,name):
+            return {'apiVersion':'apps/v1' if kind=='Deployment' else 'batch/v1' if kind=='CronJob' else 'v1','kind':kind,'metadata':{'name':name,'namespace':'demo'}}
+        configs=[obj('ConfigMap','config-a'),obj('ConfigMap','config-c'),obj('Secret','config-b')]
+        workloads=[obj('Deployment','worker'),obj('CronJob','schedule')]
+        matching=obj('ConfigMap','matching')
+        report=analyze([*configs,*workloads,matching],[matching,obj('ConfigMap','target-only')],['demo'])
+        plans=[];writes=[];tokens={}
+        page.route('**/api/contexts',lambda route:route.fulfill(json={'contexts':['source','target']}))
+        page.route('**/api/namespaces',lambda route:route.fulfill(json={'namespaces':['demo']}))
+        page.route('**/api/live/jobs',lambda route:route.fulfill(json={'job_id':'bulk'}))
+        page.route('**/api/jobs/bulk',lambda route:route.fulfill(json={'state':'completed','current':'Complete','phase':'completed_analysis','elapsed_seconds':1,'step_seconds':0,'completed_commands':1,'events':[],'result':report}))
+        def plan(route):
+            body=route.request.post_data_json;plans.append(body)
+            if body['name']=='config-b' and body['strategy']=='apply':
+                route.fulfill(status=409,json={'error':'Server-side apply field ownership conflict. Field manager(s): Mozilla. Nothing was applied.','category':'field_ownership'});return
+            token='plan-'+str(len(plans));tokens[token]=body
+            route.fulfill(json={'token':token,'mode':body['mode'],'strategy':body['strategy'],'manifest':{'kind':body['kind']},'warnings':[],'expires_in':300})
+        def execute(route):
+            body=tokens[route.request.post_data_json['token']];writes.append(body)
+            if len(writes)==2:
+                route.fulfill(status=409,json={'error':'Target configuration changed','category':'resource_version'});return
+            route.fulfill(json={'status':'Applied','operation_id':'bulk-one'})
+        page.route('**/api/sync/plan',plan);page.route('**/api/sync/execute',execute)
+        page.route('**/api/history',lambda route:route.fulfill(json={'operations':[]}))
+        page.click('#connect');page.wait_for_function("document.querySelector('#dst').options.length===3")
+        page.select_option('#src','source');page.select_option('#dst','target');page.click('#load-namespaces')
+        page.wait_for_function("document.querySelector('#namespace-list input')!==null")
+        page.click('#namespace-summary');page.check('#namespace-all');page.click('#namespace-summary');page.click('#submit')
+        page.wait_for_selector('#results',state='visible')
+        self.assertEqual(page.locator('#bulk-sync').inner_text(),'Sync all (3)')
+        self.assertEqual(page.locator('#bulk-activate').inner_text(),'Activate all (2)')
+        page.select_option('#filter-kind','Secret');self.assertFalse(page.locator('#bulk-actions').is_visible())
+        page.click('#clear-filters');page.click('#bulk-activate')
+        page.wait_for_function("!document.querySelector('#sync-confirm').disabled")
+        self.assertEqual({body['name'] for body in plans},{'worker','schedule'})
+        self.assertTrue(all(body['mode']=='activate' for body in plans))
+        page.click('#sync-cancel');self.assertEqual(writes,[])
+        plans.clear();page.click('#bulk-sync');page.wait_for_selector('#preview-guarded',state='visible')
+        self.assertTrue(page.locator('#sync-confirm').is_disabled());self.assertEqual(writes,[])
+        self.assertIn('Mozilla',page.locator('#conflict-summary').inner_text())
+        page.click('#preview-guarded');page.wait_for_function("!document.querySelector('#sync-confirm').disabled")
+        self.assertEqual(page.locator('#bulk-review-rows tr').count(),3)
+        self.assertTrue(all(body['mode']=='sync' for body in plans))
+        self.assertTrue(all(body['strategy']=='merge' for body in plans[-3:]))
+        page.click('#sync-confirm');page.wait_for_function("document.querySelector('#review-status').textContent.includes('Stopped after 1 of 3')")
+        self.assertEqual(len(writes),2)
+        self.assertIn('Not processed',page.locator('#bulk-review-rows').inner_text())
+        self.assertTrue(page.locator('#sync-confirm').is_disabled())
+        page.click('#sync-cancel');self.assertFalse(page.locator('#bulk-actions').is_visible())
+        # A fresh comparison re-enables eligible actions; successful activation
+        # applies every reviewed workload and keeps the per-resource results.
+        page.click('#step-scope');page.click('#submit');page.wait_for_selector('#results',state='visible')
+        page.click('#bulk-activate');page.wait_for_function("!document.querySelector('#sync-confirm').disabled")
+        page.click('#sync-confirm');page.wait_for_function("document.querySelector('#review-status').textContent.includes('Applied 2 resources')")
+        self.assertEqual([body['mode'] for body in writes[-2:]],['activate','activate'])
+        self.assertEqual(page.locator('#bulk-review-rows').inner_text().count('Applied'),2)
+        self.assertTrue(page.locator('#sync-confirm').is_disabled())
+
     def test_live_prepare_activate_and_rollback(self):
         page = self.page
         namespace = {'apiVersion':'v1','kind':'Namespace','metadata':{'name':'demo'}}
@@ -224,7 +284,7 @@ class WorkspaceBrowserTests(unittest.TestCase):
             page.click('#sync-confirm')
             page.wait_for_function("document.querySelector('#history-rows').textContent.includes('Prepared')")
             self.assertEqual(state['target']['spec']['replicas'], 0)
-            page.click('#step-compare')
+            page.click('#step-scope');page.click('#submit');page.wait_for_selector('#results',state='visible')
             self.assertEqual(page.locator('#rows [data-action=activate]').inner_text(),'Activate target')
             page.locator('#rows [data-action=activate]').click()
             page.wait_for_selector('#preview-guarded', state='visible')

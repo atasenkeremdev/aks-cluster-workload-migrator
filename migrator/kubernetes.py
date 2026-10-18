@@ -455,3 +455,16 @@ def rollback_execute(body):
     state = 'RollbackApplied' if plan['manifest'] else 'DeletionRequested'
     history.update(record['id'], {'status': state, 'rollback_available': False, 'health': None})
     return {'status': state, 'operation_id': record['id']}
+
+
+def discard_plans(body):
+    tokens = body.get('tokens')
+    if not isinstance(tokens, list) or len(tokens) > 100 or any(not isinstance(token, str) or len(token) > 200 for token in tokens):
+        raise ValueError('Provide at most 100 preview tokens')
+    removed = 0
+    with _LOCK:
+        for token in tokens:
+            if token in _PLANS and not _PLANS[token].get('rollback'):
+                del _PLANS[token]
+                removed += 1
+    return {'discarded': removed}

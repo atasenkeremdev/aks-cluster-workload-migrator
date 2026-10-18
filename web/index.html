@@ -57,13 +57,13 @@
   </section>
   <section id="results" hidden>
     <div class="section-heading"><div><span class="eyebrow">02 / COMPARE</span><h2>Resources, side by side.</h2></div><button id="download" type="button">Download report ↓</button></div>
-    <p id="scope-stale" class="warning" hidden>Scope changed. Run the comparison again before applying changes.</p>
+    <p id="scope-stale" class="warning" hidden>Comparison is out of date. Run analysis again before applying more changes.</p>
     <div id="summary" class="metrics"></div>
     <div class="card comparison-card">
       <div class="comparison-controls"><label class="search-field">Search resources<input id="resource-search" type="search" placeholder="Resource name or namespace…"></label><label class="check-label"><input id="differences-only" type="checkbox" checked> Differences only</label></div>
       <div class="result-filters"><label>Namespace<select id="filter-namespace"><option value="">All namespaces</option></select></label><label>Kind<select id="filter-kind"><option value="">All kinds</option></select></label><label>Status<select id="filter-status"><option value="">All statuses</option></select></label><button id="clear-filters" type="button">Reset filters</button></div>
       <p id="filtered-count" class="muted" role="status"></p>
-      <div class="resource-table-wrap"><table class="resource-table"><thead><tr><th>Status</th><th><span class="column-dot source-dot"></span> SOURCE <small id="source-column-context"></small></th><th><span class="column-dot target-dot"></span> TARGET <small id="target-column-context"></small></th></tr></thead><tbody id="rows"></tbody></table></div>
+      <div id="bulk-actions" class="bulk-actions" hidden><div><strong>Apply to filtered results</strong><p class="muted">Only eligible differences shown below are included. Matching and target-only resources are excluded. Up to 100 resources per batch.</p></div><div class="row-actions"><button id="bulk-sync" type="button" hidden>Sync all</button><button id="bulk-activate" type="button" class="activate-action" hidden>Activate all</button></div></div><div class="resource-table-wrap"><table class="resource-table"><thead><tr><th>Status</th><th><span class="column-dot source-dot"></span> SOURCE <small id="source-column-context"></small></th><th><span class="column-dot target-dot"></span> TARGET <small id="target-column-context"></small></th></tr></thead><tbody id="rows"></tbody></table></div>
       <section id="versus" hidden aria-label="Selected resource comparison">
         <div class="title"><div><span class="eyebrow">SELECTED RESOURCE</span><h3 id="versus-title"></h3></div><button id="close-versus" type="button">Close ×</button></div>
         <div class="versus-grid"><div><h3>Source · expected target manifest</h3><pre id="source-preview"></pre></div><div><h3>Target · current manifest</h3><pre id="target-preview"></pre></div></div>
@@ -88,7 +88,7 @@
   <div class="dialog-header"><span class="eyebrow">REVIEW TARGET CHANGE</span><h2 id="confirm-title">Review resource update</h2></div>
   <p id="sync-description" class="confirm-destination"></p>
   <p id="confirm-impact" class="warning"></p>
-  <p id="review-status" role="status">Validating target…</p>
+  <section id="bulk-review" hidden><p class="muted">Resources are applied sequentially. Execution stops on the first failure; earlier changes are not automatically rolled back.</p><div class="table-wrap bulk-resource-list"><table><thead><tr><th>Resource</th><th>Status</th></tr></thead><tbody id="bulk-review-rows"></tbody></table></div></section><p id="review-status" role="status">Validating target…</p>
   <section id="review-conflict" class="warning" hidden><strong id="conflict-summary"></strong><p id="conflict-note">No changes have been applied.</p><button id="retry-preview" type="button" hidden>Refresh preview</button><button id="preview-guarded" type="button" hidden>Review guarded update</button></section>
   <details id="review-advanced"><summary>Advanced options and technical details</summary>
     <label id="strategy-control">Existing target update method<select id="update-strategy"><option value="apply">Server-side apply · respect field ownership</option><option value="merge">Guarded merge update · overwrite submitted fields</option></select></label>

@@ -115,6 +115,29 @@ controller changes can refresh resourceVersion; the actual write still uses an
 atomic resourceVersion precondition. Target namespaces
 must already exist. Controller-managed targets cannot be overwritten directly.
 
+### Bulk actions
+
+The comparison toolbar shows **Sync all (N)** when at least two eligible
+configuration resources are in the current filtered results, and **Activate all
+(N)** when at least two eligible workloads are present. Search, namespace, kind
+and status filters all limit the batch. Matching, target-only, excluded and stale
+resources are never included. Each batch supports up to 100 resources; narrow
+filters for larger results.
+
+The same review dialog lists every resource and its validation state. All items
+must pass server-side dry-run before confirmation is enabled. Ownership conflicts
+can be reviewed with guarded updates for the whole listed batch, with a fresh
+validation. Cancellation discards previews and never executes writes. Expired
+previews require validation again.
+
+Execution is sequential and stops at the first failure. It is **not atomic**:
+earlier successful writes remain applied, later items are marked not processed,
+and individual operations/backups remain in history. API acceptance is not
+readiness; use operation history to check health. After any execution attempt,
+run analysis again before applying further changes. Closing the browser during
+execution can interrupt the remaining client-driven batch; inspect history and
+re-analyze rather than assuming everything was applied.
+
 ### Resolving activation conflicts
 
 Field-ownership conflicts and stale resourceVersion conflicts are reported

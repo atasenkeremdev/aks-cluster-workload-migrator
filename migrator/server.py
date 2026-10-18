@@ -4,7 +4,7 @@ import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from .core import analyze
-from .kubernetes import ClusterError, contexts, namespaces, live_analyze, sync_plan, sync_execute, operation_health, rollback_plan, rollback_execute
+from .kubernetes import ClusterError, contexts, namespaces, live_analyze, sync_plan, sync_execute, operation_health, rollback_plan, rollback_execute, discard_plans
 
 from . import jobs, history
 
@@ -59,7 +59,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get_content_type() != 'application/json':
             self.reply(415, {'error': 'Content-Type must be application/json.'})
             return
-        if self.path not in ('/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute', '/api/live/jobs', '/api/operations/health', '/api/rollback/plan', '/api/rollback/execute'):
+        if self.path not in ('/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute', '/api/live/jobs', '/api/operations/health', '/api/rollback/plan', '/api/rollback/execute', '/api/sync/discard'):
             self.reply(404, {'error': 'Not found'})
             return
         try:
@@ -77,6 +77,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = rollback_plan(body)
             elif self.path == '/api/rollback/execute':
                 result = rollback_execute(body)
+            elif self.path == '/api/sync/discard':
+                result = discard_plans(body)
             elif self.path == '/api/sync/plan':
                 result = sync_plan(body)
             elif self.path == '/api/sync/execute':
@@ -93,7 +95,7 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self.reply(400, {'error': 'Request body must contain valid JSON.'})
         except ValueError as error:
-            self.reply(400, {'error': str(error), 'category': error.category})
+            self.reply(400, {'error': str(error)})
         except (OSError, sqlite3.Error):
             self.reply(503, {'error': 'Local operation history could not be accessed. Check the state directory permissions.'})
         except (KeyError, TypeError, AttributeError):
