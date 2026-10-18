@@ -53,7 +53,7 @@ def listing():
                             if key not in ('before',)} for row in rows]}
 
 
-def update(operation_id, changes, *, require_rollback=False):
+def update(operation_id, changes, *, require_rollback=False, expected_status=None):
     """Merge atomically so readiness polling cannot resurrect a rollback action."""
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
@@ -61,6 +61,8 @@ def update(operation_id, changes, *, require_rollback=False):
         if not row:
             raise ValueError('Operation not found')
         record = json.loads(row[0])
+        if expected_status is not None and record.get('status') != expected_status:
+            raise ValueError('Operation changed during readiness check')
         if require_rollback and not record.get('rollback_available'):
             raise ValueError('Rollback already started or unavailable')
         record.update(changes)

@@ -307,7 +307,10 @@ def operation_health(body):
         else:
             health = evaluate(obj, record['mode'])
     # Do not update the rollback version: changes by controllers/users must not be overwritten.
-    history.update(record['id'], {'health': health})
+    try:
+        history.update(record['id'], {'health': health}, expected_status=record.get('status'))
+    except ValueError:
+        raise ClusterError('Operation changed during readiness check. Refresh history.', 409) from None
     return health
 
 
@@ -364,7 +367,7 @@ def rollback_execute(body):
     if meta.get('uid') != plan['uid'] or meta.get('resourceVersion') != plan['version']:
         raise ClusterError('Target changed after rollback preview. Preview again.', 409)
     # Save intent before the write; retain the snapshot for manual recovery on failure.
-    history.update(record['id'], {'status': 'RollingBack', 'rollback_available': False}, require_rollback=True)
+    history.update(record['id'], {'status': 'RollingBack', 'rollback_available': False, 'health': None}, require_rollback=True)
     try:
         if plan['manifest']:
             run([*args, '-n', record['namespace'], 'replace', '-f', '-', '-o', 'json'], plan['manifest'])
@@ -383,5 +386,5 @@ def rollback_execute(body):
         history.update(record['id'], {'status': 'RollbackUnknown', 'rollback_available': False})
         raise ClusterError('Rollback outcome is uncertain. Inspect the target and saved history.') from None
     state = 'RollbackApplied' if plan['manifest'] else 'DeletionRequested'
-    history.update(record['id'], {'status': state, 'rollback_available': False})
+    history.update(record['id'], {'status': state, 'rollback_available': False, 'health': None})
     return {'status': state, 'operation_id': record['id']}

@@ -30,23 +30,36 @@ On Linux, use `python3` in place of `py -3`. No package installation is needed.
 
 ## Compare
 
-1. Choose **Live Kubernetes clusters** and **Load cluster contexts**.
-2. Select actual source and target context names. A cluster's Azure name may
-   differ from its kubeconfig context. Missing contexts must first be added
-   with your established `az aks get-credentials` procedure.
-3. Load source namespaces, then choose them in the searchable multi-select dropdown.
-   Select all chooses the entire loaded list, including entries hidden by search;
-   Clear selection resets it. Changing source clears the old namespace list.
-4. Optionally enter full old/new registry hostnames.
-5. Analyze. Watch the activity log, request count and elapsed times.
-6. Filter by namespace, kind and status. Filters combine locally; summary
-   cards and report downloads retain the full analysis.
-7. Click a resource for expected source-on-target (left) and current target
-   (right). Changed JSON-pointer fields appear red; Secret values are masked.
+The workspace follows three stages: **Kapsam seç → Karşılaştır → Hazırla /
+Aktifleştir**. Live mode is selected initially. The sticky overview keeps source,
+target, namespace count, action mode, connection and current activity visible.
 
-Offline mode accepts JSON resources, arrays or Kubernetes Lists. **Load example**
-provides a complete example. For pasted JSON, click Load namespaces from JSON
-and select the desired namespaces. Offline mode never syncs to Kubernetes.
+1. Click **Context'leri yükle** and select actual source and target context names.
+   A cluster's Azure name may differ from its kubeconfig context. Missing
+   contexts must first be added with your `az aks get-credentials` procedure.
+2. Click **Kaynak namespace'lerini yükle** and choose namespaces in the searchable
+   multi-select. Select all includes entries hidden by search. Changing source
+   clears the old list.
+3. Open **Gelişmiş ayarlar** only when registry rewriting or offline JSON is
+   needed. Enter full old/new registry hostnames to rewrite container images.
+4. Start comparison. The scope folds after success. Progress and elapsed times
+   stay visible while reading; detailed logs are collapsed by default.
+5. Results align source and target resources in two columns. **Yalnızca farklar**
+   initially hides MATCH; turn it off or select MATCH status to inspect matches.
+   Name/namespace search combines with namespace, kind and status filters.
+   Resetting filters restores the differences-first view. Summary cards and
+   downloads retain the full analysis.
+6. Click either resource name for expected source-on-target (left) and current
+   target (right). Changed fields appear red and Secret values are masked.
+7. Choose **Pasif hazırla** or **Aktifleştir** in stage three (also reachable
+   through the mode button in the sticky overview). Eligible source actions use
+   that mode and appear only for DIFF/SOURCE_ONLY. MATCH and target-only resources
+   never get action buttons. Changing scope invalidates old actions until the
+   comparison is rerun.
+
+Offline mode is under **Gelişmiş ayarlar** and accepts JSON resources, arrays or
+Kubernetes Lists. **Örnek yükle** provides a complete example. For pasted JSON,
+click **JSON’dan namespace yükle** and choose the desired namespaces. Offline mode never syncs to Kubernetes.
 
 Source transformations are directional: target images/OSM labels remain visible
 as differences. Registry replacement applies only to exact registry prefixes in
@@ -64,13 +77,13 @@ StorageClasses, ingress/DNS cutover and database migration are not copied.
 
 ## Prepare, then activate
 
-Click **Sync to target** and review the explicit mode before confirming:
+Use the source resource action and review the explicit mode before confirming:
 
-- **Prepare** (default): Deployment/StatefulSet replicas become 0; CronJobs
+- **Pasif hazırla / Prepare** (default): Deployment/StatefulSet replicas become 0; CronJobs
   become suspended. This can stop an existing target workload. CronJob suspend
   does not terminate already-running Jobs. ConfigMaps, Secrets and other
   configuration resources are still applied and can affect running consumers.
-- **Activate**: apply the transformed source configuration, including its replica
+- **Aktifleştir / Activate**: apply the transformed source configuration, including its replica
   count or CronJob suspend setting. Source workloads are not stopped. Arrange
   traffic, scheduler and queue-consumer cutover to avoid duplicate processing.
 
@@ -96,7 +109,7 @@ must already exist. Controller-managed targets cannot be overwritten directly.
 An accepted API write is **Applied**, not a completed migration. The UI checks
 controller health every five seconds for about a minute. States include
 **Prepared**, **RollingOut**, **Ready**, **Failed**, **Inactive** and **Applied**.
-Use **Check readiness** in operation history to continue monitoring. Ready means
+Use **Durumu kontrol et** in operation history to continue monitoring. Ready means
 controller readiness, not a successful application-level functional test.
 CronJob execution and AMQ operator health need separate verification.
 
@@ -109,7 +122,7 @@ Raw Secret manifests are **never** persisted; Secret operations have no automati
 rollback. Journals record source/target, mode, timestamps and write outcome.
 A timeout after write submission is **Unknown** and requires target inspection.
 
-**Preview rollback** restores the prior configuration for an updated resource or
+**Geri almayı önizle** restores the prior configuration for an updated resource or
 requests deletion of a resource created by the operation. Review and explicitly
 confirm. UID, desired-configuration fingerprint and resourceVersion guards prevent
 reverting later user/configuration changes. Controller-only status updates do not
@@ -117,6 +130,12 @@ invalidate rollback. Updates use guarded replace; creates are undone with DELETE
 UID/resourceVersion preconditions. DeletionRequested is not proof finalizers have
 completed. RollbackApplied means the restore was accepted; check readiness again.
 Rollback does not restore database/volume data, external effects or field ownership.
+
+The stage-three result summary groups the latest journaled operation per target
+resource into passive-ready, controller-ready, failed/review and pending states.
+It reflects recorded checks, not a fresh cluster-wide health scan; use the history
+controls to refresh readiness. Confirmation highlights the exact target and the
+expected impact; technical manifests and log details stay expandable.
 
 ## Performance and limits
 
@@ -139,3 +158,16 @@ dependency checks, write conflicts, readiness, durable snapshots, unknown outcom
 and guarded rollback. Browser integration was exercised against simulated cluster
 responses; raw DELETE transport was checked with real kubectl against a local
 fake API. Real AKS writes and Windows execution require validation on your machine.
+
+
+Optional browser regression tests require Playwright plus Chromium:
+
+```sh
+python3 tests/browser_workspace.py
+```
+
+The script uses a system Chromium when available, or Playwright's installed
+Chromium. `BROWSER_EXECUTABLE` can point at a local browser binary. It covers
+responsive layout, default difference filtering, search, stage navigation,
+namespace selection, live progress and a simulated prepare/activate/rollback
+workflow. It never writes to a real cluster.

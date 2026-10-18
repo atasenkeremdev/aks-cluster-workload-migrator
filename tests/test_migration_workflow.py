@@ -195,3 +195,10 @@ class JournalAndRollbackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Passive preparation is unsupported'):
             k.sync_plan({**self.body,'kind':'DaemonSet'})
         self.assertFalse(k._PLANS)
+
+    def test_readiness_result_from_before_rollback_is_rejected(self):
+        record=history.save({'status':'Applied','rollback_available':True,'health':{'state':'Ready'}})
+        history.update(record['id'],{'status':'RollingBack','health':None,'rollback_available':False},require_rollback=True)
+        with self.assertRaises(ValueError):
+            history.update(record['id'],{'health':{'state':'Ready'}},expected_status='Applied')
+        self.assertIsNone(history.get(record['id'])['health'])
