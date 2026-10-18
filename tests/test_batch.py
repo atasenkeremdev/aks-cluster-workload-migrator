@@ -34,3 +34,8 @@ class BatchTests(unittest.TestCase):
         k.run(['get','Deployment,Secret','-o','json'])
         self.assertEqual(run.call_args.kwargs['timeout'],50)
         self.assertIn('--request-timeout=15s',run.call_args.args[0])
+
+    def test_multiselect_namespace_limit(self):
+        k.validate_selection('source','target',[f'app-{i}' for i in range(200)])
+        with self.assertRaises(ValueError):
+            k.validate_selection('source','target',[f'app-{i}' for i in range(201)])

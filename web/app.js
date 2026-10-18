@@ -2,7 +2,7 @@ const $ = id => document.getElementById(id);
 let report, analyzedPayload, selectedRow, pendingPlan, pendingRollback=false;
 $('demo').onclick = () => {
   for(const id of ['src','dst']){if(!$(id).value){const option=new Option(id==='src'?'example-source':'example-target',id==='src'?'example-source':'example-target');$(id).append(option);$(id).value=option.value;}}
-  $('namespaces').value = 'demo'; $('old').value = 'old.example.com'; $('new').value = 'new.example.com';
+  setNamespaces(['demo'],['demo']); $('old').value = 'old.example.com'; $('new').value = 'new.example.com';
   const resource = {apiVersion:'apps/v1',kind:'Deployment',metadata:{name:'checkout',namespace:'demo'},spec:{replicas:2,template:{metadata:{labels:{app:'checkout'}},spec:{containers:[{name:'app',image:'old.example.com/checkout:v1'}]}}}};
   $('source').value = JSON.stringify([resource],null,2);
   const target = JSON.parse(JSON.stringify(resource)); target.spec.template.spec.containers[0].image='new.example.com/checkout:v1'; target.spec.replicas=1;
@@ -15,7 +15,9 @@ $('planner').onsubmit = async event => {
     if(Boolean($('old').value.trim())!==Boolean($('new').value.trim())) throw Error('Provide both registry addresses.');
     const live=$('mode').value==='live';
     if(live && (!loadedContexts.includes($('src').value)||!loadedContexts.includes($('dst').value))) throw Error('Load cluster contexts and select both actual context names.');
-    const payload={source:live?[]:JSON.parse($('source').value),target:live?[]:JSON.parse($('target').value),source_context:$('src').value.trim(),target_context:$('dst').value.trim(),namespaces:$('namespaces').value.split(',').map(s=>s.trim()).filter(Boolean),old_registry:$('old').value.trim(),new_registry:$('new').value.trim()};
+    const payload={source:live?[]:JSON.parse($('source').value),target:live?[]:JSON.parse($('target').value),source_context:$('src').value.trim(),target_context:$('dst').value.trim(),namespaces:[...selectedNamespaces].sort(),old_registry:$('old').value.trim(),new_registry:$('new').value.trim()};
+    if(!payload.namespaces.length)throw Error('Select at least one namespace.');
+    if(payload.namespaces.length>200)throw Error('Select no more than 200 namespaces per analysis.');
     const data=live?await analyzeWithProgress(payload):await clusterRequest('/api/analyze',payload);
     analyzedPayload=live?structuredClone(payload):null;
     report={...data,source_context:$('src').value,target_context:$('dst').value};
@@ -30,14 +32,16 @@ $('planner').onsubmit = async event => {
 };
 $('download').onclick=()=>{if(!report)return;const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='migration-report.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 
-$('mode').onchange=()=>{const live=$('mode').value==='live';$('json-inputs').hidden=live;for(const id of ['source','target'])$(id).required=!live;$('results').hidden=true;};
+$('mode').onchange=()=>{const live=$('mode').value==='live';$('json-inputs').hidden=live;for(const id of ['source','target'])$(id).required=!live;$('results').hidden=true;setNamespaces([]);$('namespace-from-json').hidden=live;if(!live)loadOfflineNamespaces();};
 async function clusterRequest(path,payload,timeout){const options=payload?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{};if(timeout)options.signal=AbortSignal.timeout(timeout);const response=await fetch(path,options);const data=await response.json();if(!response.ok)throw Error(data.error);return data;}
 let loadedContexts=[];
-$('connect').onclick=async()=>{ $('connect').disabled=true;try{const data=await clusterRequest('/api/contexts');loadedContexts=data.contexts;
+$('connect').onclick=async()=>{ $('connect').disabled=true;const previousSource=$('src').value;try{const data=await clusterRequest('/api/contexts');loadedContexts=data.contexts;
 for(const id of ['src','dst']){const previous=$(id).value;$(id).replaceChildren(new Option(id==='src'?'Select source context':'Select target context',''));for(const name of loadedContexts)$(id).append(new Option(name,name));if(loadedContexts.includes(previous))$(id).value=previous;else if(id==='src'&&loadedContexts.includes('aks-dev'))$(id).value='aks-dev';}
+if($('src').value!==previousSource)setNamespaces([]);
 $('connection').textContent=loadedContexts.length+' contexts loaded. Select the exact source and target names. A cluster name may differ from its kubeconfig context name.';
 }catch(error){$('connection').textContent=error.message;}finally{$('connect').disabled=false;}};
-$('load-namespaces').onclick=async()=>{$('load-namespaces').disabled=true;try{const data=await clusterRequest('/api/namespaces',{context:$('src').value.trim()});$('namespace-options').textContent='Available source namespaces: '+data.namespaces.join(', ');$('connection').textContent='Source cluster reachable. Enter the namespaces to compare.';}catch(error){$('connection').textContent=error.message;}finally{$('load-namespaces').disabled=false;}};
+$('load-namespaces').onclick=async()=>{const context=$('src').value.trim();$('load-namespaces').disabled=true;try{const data=await clusterRequest('/api/namespaces',{context});if($('src').value!==context||$('mode').value!=='live')return;setNamespaces(data.namespaces);$('namespace-options').textContent=data.namespaces.length+' source namespaces available.';$('connection').textContent='Source cluster reachable. Choose namespaces from Migration scope.';}catch(error){$('connection').textContent=error.message;}finally{$('load-namespaces').disabled=false;}};
+
 
 function flat(value,path='',out={}){if(value!==null && typeof value==='object'){const entries=Object.entries(value);if(!entries.length)out[path]=JSON.stringify(value);for(const [key,v] of entries)flat(v,path+'/'+key.replaceAll('~','~0').replaceAll('/','~1'),out);}else out[path]=JSON.stringify(value);return out;}
 function showVersus(row){selectedRow=row;$('versus').hidden=false;$('versus-title').textContent=row.kind+' / '+row.namespace+' / '+row.name;$('sync-status').textContent='';$('sync').hidden=!canSync(row);$('diff-paths').textContent='Changed fields: '+(row.diff_paths.join(', ')||'None');
@@ -106,3 +110,38 @@ async function prepareRollback(id){try{pendingPlan=await clusterRequest('/api/ro
 async function trackReadiness(id){for(let attempt=0;attempt<12;attempt++){try{const result=await clusterRequest('/api/operations/health',{operation_id:id});$('sync-status').textContent=result.state+' — '+result.detail;await loadHistory();if(result.state!=='RollingOut')return;}catch(error){$('sync-status').textContent='Applied; readiness check failed: '+error.message;return;}await new Promise(resolve=>setTimeout(resolve,5000));}$('sync-status').textContent='Still rolling out. Use Check readiness in operation history to continue monitoring.';}
 
 function canSync(row){return Boolean(analyzedPayload && row.manifest && row.kind!=='Namespace' && ['DIFF','SOURCE_ONLY'].includes(row.status));}
+
+let availableNamespaces=[], selectedNamespaces=new Set();
+function setNamespaces(names,selection){
+  availableNamespaces=[...new Set(names)].sort();
+  selectedNamespaces=new Set((selection??[...selectedNamespaces]).filter(name=>availableNamespaces.includes(name)));
+  $('namespace-search').value='';renderNamespaces();
+}
+function renderNamespaces(){
+  const search=$('namespace-search').value.trim().toLowerCase();
+  const visible=availableNamespaces.filter(name=>name.toLowerCase().includes(search));
+  $('namespace-list').replaceChildren();
+  for(const name of visible){const label=document.createElement('label'),check=document.createElement('input');check.type='checkbox';check.value=name;check.checked=selectedNamespaces.has(name);check.onchange=()=>{if(check.checked)selectedNamespaces.add(name);else selectedNamespaces.delete(name);updateNamespaceCount();};label.append(check,document.createTextNode(name));$('namespace-list').append(label);}
+  $('namespace-empty').hidden=visible.length>0;$('namespace-empty').textContent=availableNamespaces.length?'No namespaces match your search.':$('mode').value==='live'?'Load source namespaces to choose.':'Load example or load namespaces from your JSON manifests.';
+  updateNamespaceCount();
+}
+function updateNamespaceCount(){
+  const count=selectedNamespaces.size;
+  $('namespace-summary-text').textContent=count?`${count} namespace${count===1?'':'s'} selected`:'Select namespaces';
+  $('namespace-count').textContent=`${count} of ${availableNamespaces.length} selected · maximum 200`;
+  $('namespace-all').checked=availableNamespaces.length>0&&count===availableNamespaces.length;
+  $('namespace-all').indeterminate=count>0&&count<availableNamespaces.length;
+  $('namespace-all').disabled=!availableNamespaces.length;
+}
+$('namespace-search').oninput=renderNamespaces;
+$('namespace-all').onchange=()=>{selectedNamespaces=new Set($('namespace-all').checked?availableNamespaces:[]);renderNamespaces();};
+$('namespace-clear').onclick=()=>{selectedNamespaces.clear();renderNamespaces();};
+function loadOfflineNamespaces(){
+ try{const names=[];for(const id of ['source','target']){if(!$(id).value.trim())continue;const data=JSON.parse($(id).value);const objects=Array.isArray(data)?data:data.kind==='List'?data.items:[data];for(const obj of objects){const name=obj.metadata?.namespace||(obj.kind==='Namespace'?obj.metadata?.name:null);if(name&&!['elastic-agent','kube-system','kube-public','kube-node-lease'].includes(name))names.push(name);}}setNamespaces(names);$('error').textContent='';}catch(error){$('error').textContent='Provide valid source and target JSON before loading namespaces.';}
+}
+$('namespace-from-json').onclick=loadOfflineNamespaces;
+for(const id of ['source','target'])$(id).addEventListener('change',()=>{if($('mode').value==='offline')loadOfflineNamespaces();});
+$('src').addEventListener('change',()=>{if($('mode').value==='live'){setNamespaces([]);$('namespace-options').textContent='Source changed. Load source namespaces again.';}});
+document.addEventListener('click',event=>{if(!$('namespace-dropdown').contains(event.target))$('namespace-dropdown').open=false;});
+$('namespace-dropdown').addEventListener('keydown',event=>{if(event.key==='Escape'){$('namespace-dropdown').open=false;$('namespace-summary').focus();}});
+renderNamespaces();

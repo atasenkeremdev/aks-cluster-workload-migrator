@@ -110,8 +110,8 @@ def namespaces(context):
 def validate_selection(source, target, selected):
     if source == target:
         raise ValueError('Source and target contexts must be distinct')
-    if not isinstance(selected, list) or not 1 <= len(selected) <= 50 or len(set(selected)) != len(selected):
-        raise ValueError('Select between 1 and 50 unique namespaces')
+    if not isinstance(selected, list) or not 1 <= len(selected) <= 200 or len(set(selected)) != len(selected):
+        raise ValueError('Select between 1 and 200 unique namespaces')
     if any(not isinstance(ns, str) or len(ns) > 63 or not re.fullmatch(r'[a-z0-9](?:[-a-z0-9]*[a-z0-9])?', ns) or ns in PROTECTED for ns in selected):
         raise ValueError('Invalid or protected namespace')
 

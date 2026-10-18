@@ -34,7 +34,9 @@ On Linux, use `python3` in place of `py -3`. No package installation is needed.
 2. Select actual source and target context names. A cluster's Azure name may
    differ from its kubeconfig context. Missing contexts must first be added
    with your established `az aks get-credentials` procedure.
-3. Load source namespaces, then enter the desired namespaces, comma separated.
+3. Load source namespaces, then choose them in the searchable multi-select dropdown.
+   Select all chooses the entire loaded list, including entries hidden by search;
+   Clear selection resets it. Changing source clears the old namespace list.
 4. Optionally enter full old/new registry hostnames.
 5. Analyze. Watch the activity log, request count and elapsed times.
 6. Filter by namespace, kind and status. Filters combine locally; summary
@@ -43,7 +45,8 @@ On Linux, use `python3` in place of `py -3`. No package installation is needed.
    (right). Changed JSON-pointer fields appear red; Secret values are masked.
 
 Offline mode accepts JSON resources, arrays or Kubernetes Lists. **Load example**
-provides a complete example. Offline mode never syncs to Kubernetes.
+provides a complete example. For pasted JSON, click Load namespaces from JSON
+and select the desired namespaces. Offline mode never syncs to Kubernetes.
 
 Source transformations are directional: target images/OSM labels remain visible
 as differences. Registry replacement applies only to exact registry prefixes in
@@ -120,7 +123,7 @@ Rollback does not restore database/volume data, external effects or field owners
 Reads batch supported kinds into one kubectl process per namespace, avoiding
 repeated startup/auth overhead. API list calls remain sequential and snapshots
 are non-atomic. Per-API timeout: 15s; subprocess budget: 25s per kind in the batch.
-Up to 50 namespaces per analysis, four concurrent analysis jobs, and 100 latest
+Up to 200 namespaces per analysis, four concurrent analysis jobs, and 100 latest
 activity events. Results remain in memory; old completed jobs are cleaned on
 later submissions after ten minutes. Browser disconnect does not cancel a job.
 
