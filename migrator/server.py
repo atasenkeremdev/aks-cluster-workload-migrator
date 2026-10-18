@@ -3,12 +3,18 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from .core import analyze
+from .kubernetes import ClusterError, contexts, namespaces, live_analyze
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == '/health':
+        if self.path == '/api/contexts':
+            try:
+                self.reply(200, contexts())
+            except ClusterError as error:
+                self.reply(error.status, {'error': str(error)})
+        elif self.path == '/health':
             self.reply(200, {'status': 'ok'})
         elif self.path in ('/', '/app.js', '/style.css'):
             name = 'index.html' if self.path == '/' else self.path[1:]
@@ -31,7 +37,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self):
-        if self.path != '/api/analyze':
+        if self.path not in ('/api/analyze', '/api/live/analyze', '/api/namespaces'):
             self.reply(404, {'error': 'Not found'})
             return
         try:
@@ -40,14 +46,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(413, {'error': 'JSON payload must be between 1 byte and 5 MB'})
                 return
             body = json.loads(self.rfile.read(length))
-            self.reply(200, analyze(body['source'], body['target'], body['namespaces'], body.get('old_registry', ''), body.get('new_registry', '')))
+            if self.path == '/api/namespaces':
+                result = namespaces(body['context'])
+            elif self.path == '/api/live/analyze':
+                result = live_analyze(body)
+            else:
+                result = analyze(body['source'], body['target'], body['namespaces'], body.get('old_registry', ''), body.get('new_registry', ''))
+            self.reply(200, result)
+        except ClusterError as error:
+            self.reply(error.status, {'error': str(error)})
         except (ValueError, KeyError, TypeError, AttributeError):
-            self.reply(400, {'error': 'Invalid manifest or namespace selection; check the JSON inputs.'})
+            self.reply(400, {'error': 'Invalid input. Check manifests, contexts and namespace selection.'})
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--port', type=int, default=8080)
+    parser.add_argument('--port', type=int, default=8081)
     args = parser.parse_args()
     ThreadingHTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
 
