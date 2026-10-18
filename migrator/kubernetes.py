@@ -1,5 +1,6 @@
 """Read-only kubectl adapter. Never changes the current context or credentials."""
 import json
+import hashlib
 import re
 import shutil
 import subprocess
@@ -17,6 +18,9 @@ def progress(message, phase="step"):
 
 from .core import normalize, reason, safe_manifest
 from .core import KINDS, PROTECTED, analyze
+from . import history
+from .readiness import evaluate
+from .dependencies import references
 
 
 class ClusterError(Exception):
@@ -189,7 +193,33 @@ def sync_plan(body):
             target_obj = json.loads(raw)
         except json.JSONDecodeError:
             raise ClusterError('Target returned invalid JSON.') from None
+    if target_obj and reason(target_obj):
+        raise ValueError('Target resource is controller-managed or excluded; sync is blocked')
+    mode = body.get('mode', 'prepare')
+    if mode not in ('prepare', 'activate'):
+        raise ValueError('Select prepare or activate mode')
+    if mode == 'prepare' and kind in ('DaemonSet', 'ActiveMQArtemis', 'HorizontalPodAutoscaler'):
+        raise ValueError('Passive preparation is unsupported for this kind. Review dependencies and explicitly select activation.')
     manifest = normalize(obj, body.get('old_registry', ''), body.get('new_registry', ''))
+    if mode == 'prepare' and kind in ('Deployment', 'StatefulSet'):
+        hpas = read_json([*dst_args, '-n', ns, 'get', 'horizontalpodautoscalers', '-o', 'json'])
+        if any(hpa.get('spec', {}).get('scaleTargetRef', {}).get('name') == name and
+               hpa.get('spec', {}).get('scaleTargetRef', {}).get('kind') == kind for hpa in hpas.get('items', [])):
+            raise ValueError('Target HPA controls this workload and can reactivate it. Resolve the HPA before passive preparation.')
+        manifest.setdefault('spec', {})['replicas'] = 0
+    if mode == 'prepare' and kind == 'CronJob':
+        manifest.setdefault('spec', {})['suspend'] = True
+    # Verify referenced objects exist without retrieving Secret payloads.
+    for dependency_kind, dependency_name in references(manifest):
+        if not run([*dst_args, '-n', ns, 'get', dependency_kind, dependency_name,
+                    '--ignore-not-found', '-o', 'name']).strip():
+            raise ValueError('Target dependency missing: ' + dependency_kind + '/' + dependency_name)
+    if kind == 'StatefulSet':
+        for claim in manifest.get('spec', {}).get('volumeClaimTemplates', []) or []:
+            storage_class = claim.get('spec', {}).get('storageClassName')
+            if storage_class and not run([*dst_args, 'get', 'storageclass', storage_class,
+                                          '--ignore-not-found', '-o', 'name']).strip():
+                raise ValueError('Target StorageClass missing: ' + storage_class)
     version = target_obj['metadata']['resourceVersion'] if target_obj else None
     if version:
         manifest['metadata']['resourceVersion'] = version
@@ -198,7 +228,7 @@ def sync_plan(body):
     run([*dst_args, '-n', ns, *action, '--dry-run=server', '-f', '-', '-o', 'json'], manifest)
     token = secrets.token_urlsafe(32)
     plan = dict(target=target, namespace=ns, resource=resource, name=name,
-                version=version, manifest=manifest, action=action, expires=time.monotonic()+300)
+                version=version, manifest=manifest, action=action, before=target_obj, source=source, mode=mode, kind=kind, expires=time.monotonic()+300)
     with _LOCK:
         for key in list(_PLANS):
             if _PLANS[key]['expires'] < time.monotonic():
@@ -207,7 +237,15 @@ def sync_plan(body):
             raise ClusterError('Too many pending sync previews. Try again later.', 429)
         _PLANS[token] = plan
     return {'token': token, 'manifest': safe_manifest(manifest), 'target_context': target,
-            'operation': 'update' if target_obj else 'create', 'expires_in': 300}
+            'operation': 'update' if target_obj else 'create', 'mode': mode,
+            'warnings': ['Preparation can stop an existing target workload. Activation may duplicate source processing. CronJob suspend does not stop already running jobs.',
+                         'Reference existence is checked; image pull, Workload Identity, network access, data integrity and application health require separate validation.',
+                         'Secret rollback backups are not stored.' if kind == 'Secret' else 'A local rollback snapshot will be saved.'],
+            'expires_in': 300}
+
+
+def fingerprint(obj):
+    return hashlib.sha256(json.dumps(normalize(obj, transform=False), sort_keys=True).encode()).hexdigest()
 
 
 def sync_execute(body):
@@ -215,7 +253,7 @@ def sync_execute(body):
         raise ValueError('Explicit confirmation is required')
     with _LOCK:
         plan = _PLANS.pop(body.get('token', ''), None)
-    if not plan or plan['expires'] < time.monotonic():
+    if not plan or plan.get('rollback') or plan['expires'] < time.monotonic():
         raise ValueError('Sync preview expired or already used. Preview again.')
     args = context_args(plan['target'])
     raw = run([*args, '-n', plan['namespace'], 'get', plan['resource'], plan['name'], '--ignore-not-found', '-o', 'json'])
@@ -223,5 +261,127 @@ def sync_execute(body):
     version = current['metadata']['resourceVersion'] if current else None
     if version != plan['version']:
         raise ClusterError('Target changed after preview. Analyze and preview again.', 409)
-    run([*args, '-n', plan['namespace'], *plan['action'], '-f', '-', '-o', 'json'], plan['manifest'])
-    return {'status': 'synced', 'target_context': plan['target'], 'namespace': plan['namespace'], 'name': plan['name']}
+    # Journal must be durable before attempting the write. Secret content is excluded.
+    record = history.save({'source': plan['source'], 'target': plan['target'], 'namespace': plan['namespace'],
+                           'resource': plan['resource'], 'name': plan['name'], 'kind': plan['kind'],
+                           'mode': plan['mode'], 'before': plan['before'] if plan['kind'] != 'Secret' else None,
+                           'rollback_available': False, 'status': 'Applying'})
+    try:
+        raw = run([*args, '-n', plan['namespace'], *plan['action'], '-f', '-', '-o', 'json'], plan['manifest'])
+        applied = json.loads(raw)
+        meta = applied['metadata']
+        record.update(status='Applied', applied_uid=meta['uid'], applied_version=meta['resourceVersion'],
+                      rollback_available=plan['kind'] != 'Secret', applied_fingerprint=fingerprint(applied))
+        history.save(record)
+    except Exception:
+        # A timeout can happen after an API write succeeded; never claim no change.
+        record.update(status='Unknown', rollback_available=False)
+        try:
+            history.save(record)
+        except Exception:
+            pass  # Initial Applying record remains; the write result is uncertain.
+        raise ClusterError('Write outcome is uncertain. Inspect target and operation history before retrying.') from None
+    return {'status': 'Applied', 'operation_id': record['id'], 'mode': plan['mode'],
+            'target_context': plan['target'], 'namespace': plan['namespace'], 'name': plan['name']}
+
+
+def operation_health(body):
+    record = history.get(body['operation_id'])
+    args = context_args(record['target'])
+    command = [*args, '-n', record['namespace'], 'get', record['resource'], record['name'], '-o', 'json']
+    if record.get('status') == 'DeletionRequested':
+        raw = run([*command, '--ignore-not-found'])
+        obj = json.loads(raw) if raw.strip() else None
+        if obj is None:
+            health = {'state': 'Deleted', 'detail': 'The created target resource is absent'}
+        elif obj['metadata'].get('uid') != record.get('applied_uid'):
+            raise ClusterError('A different resource now exists with this name.', 409)
+        else:
+            health = {'state': 'Terminating', 'detail': 'Waiting for target deletion/finalizers'}
+    else:
+        obj = read_json(command)
+        if obj['metadata'].get('uid') != record.get('applied_uid'):
+            raise ClusterError('Resource identity changed after this operation.', 409)
+        if record.get('status') == 'Applied' and fingerprint(obj) != record.get('applied_fingerprint'):
+            health = {'state': 'Drifted', 'detail': 'Target configuration changed after this operation; review the comparison'}
+        else:
+            health = evaluate(obj, record['mode'])
+    # Do not update the rollback version: changes by controllers/users must not be overwritten.
+    history.update(record['id'], {'health': health})
+    return health
+
+
+def rollback_plan(body):
+    record = history.get(body['operation_id'])
+    if not record.get('rollback_available'):
+        raise ValueError('Rollback is unavailable for this operation (Secret, uncertain write or already rolled back)')
+    args = context_args(record['target'])
+    current = read_json([*args, '-n', record['namespace'], 'get', record['resource'], record['name'], '-o', 'json'])
+    if current['metadata'].get('uid') != record['applied_uid']:
+        raise ClusterError('Target was replaced after sync. Rollback blocked.', 409)
+    if reason(current):
+        raise ClusterError('Target is now controller-managed or excluded. Automatic rollback blocked.', 409)
+    if fingerprint(current) != record.get('applied_fingerprint'):
+        raise ClusterError('Target configuration changed after sync. Automatic rollback blocked; review and recover manually.', 409)
+    # Status updates can advance resourceVersion; compare desired content instead of
+    # rejecting controller-only status changes. The reviewed version is still used
+    # as an atomic precondition for rollback execution.
+    before = record['before']
+    manifest = None
+    if before:
+        manifest = json.loads(json.dumps(before))
+        for key in ('managedFields', 'creationTimestamp', 'generation'):
+            manifest.get('metadata', {}).pop(key, None)
+        manifest.pop('status', None)
+        manifest['metadata']['resourceVersion'] = current['metadata']['resourceVersion']
+        run([*args, '-n', record['namespace'], 'replace', '--dry-run=server', '-f', '-', '-o', 'json'], manifest)
+    token = secrets.token_urlsafe(32)
+    with _LOCK:
+        for key in list(_PLANS):
+            if _PLANS[key]['expires'] < time.monotonic():
+                del _PLANS[key]
+        if len(_PLANS) >= 100:
+            raise ClusterError('Too many pending previews. Try again later.', 429)
+        _PLANS[token] = {'rollback': record, 'manifest': manifest, 'version': current['metadata']['resourceVersion'],
+                         'uid': current['metadata']['uid'], 'expires': time.monotonic()+300}
+    return {'token': token, 'operation': 'restore' if manifest else 'delete-created-resource',
+            'target_context': record['target'], 'manifest': safe_manifest(manifest) if manifest else None,
+            'namespace': record['namespace'], 'name': record['name'], 'kind': record['kind'],
+            'warning': 'Rollback restores the saved configuration or deletes the resource created by this sync. Review current state first.'}
+
+
+def rollback_execute(body):
+    if body.get('confirm') is not True:
+        raise ValueError('Explicit rollback confirmation required')
+    with _LOCK:
+        plan = _PLANS.pop(body.get('token', ''), None)
+    if not plan or not plan.get('rollback') or plan['expires'] < time.monotonic():
+        raise ValueError('Rollback preview expired or already used')
+    record = plan['rollback']
+    args = context_args(record['target'])
+    current = read_json([*args, '-n', record['namespace'], 'get', record['resource'], record['name'], '-o', 'json'])
+    meta = current['metadata']
+    if meta.get('uid') != plan['uid'] or meta.get('resourceVersion') != plan['version']:
+        raise ClusterError('Target changed after rollback preview. Preview again.', 409)
+    # Save intent before the write; retain the snapshot for manual recovery on failure.
+    history.update(record['id'], {'status': 'RollingBack', 'rollback_available': False}, require_rollback=True)
+    try:
+        if plan['manifest']:
+            run([*args, '-n', record['namespace'], 'replace', '-f', '-', '-o', 'json'], plan['manifest'])
+        else:
+            api = current['apiVersion']
+            prefix = '/api/' + api if '/' not in api else '/apis/' + api
+            # Resolve the plural using API discovery rather than guessing from Kind.
+            discovery = read_json([*args, 'get', '--raw', prefix])
+            plural = next(r['name'] for r in discovery['resources'] if r['kind'] == current['kind'] and r.get('namespaced') and '/' not in r['name'])
+            from urllib.parse import quote
+            path = prefix + '/namespaces/' + quote(record['namespace'], safe='') + '/' + plural + '/' + quote(record['name'], safe='')
+            options = {'apiVersion': 'v1', 'kind': 'DeleteOptions',
+                       'preconditions': {'uid': plan['uid'], 'resourceVersion': plan['version']}}
+            run([*args, 'delete', '--raw', path, '-f', '-'], options)
+    except Exception:
+        history.update(record['id'], {'status': 'RollbackUnknown', 'rollback_available': False})
+        raise ClusterError('Rollback outcome is uncertain. Inspect the target and saved history.') from None
+    state = 'RollbackApplied' if plan['manifest'] else 'DeletionRequested'
+    history.update(record['id'], {'status': state, 'rollback_available': False})
+    return {'status': state, 'operation_id': record['id']}

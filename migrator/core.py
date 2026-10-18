@@ -1,7 +1,5 @@
 """Shared migration policy and pure manifest transformations."""
 import copy
-import hashlib
-import json
 
 KINDS = {'Namespace', 'Deployment', 'StatefulSet', 'DaemonSet', 'CronJob',
          'Service', 'ConfigMap', 'Secret', 'ServiceAccount', 'Role', 'RoleBinding',
@@ -19,6 +17,8 @@ def reason(obj):
         return 'Protected namespace'
     if obj.get('kind') not in KINDS:
         return 'Outside migration scope (Ingress is managed by Terraform)'
+    if any(owner.get('controller') for owner in meta.get('ownerReferences', []) or []):
+        return 'Controller-managed resource; migrate its owning custom resource or controller instead'
     if name == 'kube-root-ca.crt' or name.startswith(('envoy-bootstrap-config-', 'sh.helm.release.')):
         return 'Generated resource'
     if ns.startswith('dbpcorp-postgre-') and name.startswith('postgre-'):
@@ -40,7 +40,7 @@ def clean_metadata(obj):
     obj.pop('status', None)
 
 
-def normalize(obj, old_registry='', new_registry=''):
+def normalize(obj, old_registry='', new_registry='', *, transform=True):
     obj = copy.deepcopy(obj)
     clean_metadata(obj)
     kind, spec = obj.get('kind'), obj.get('spec', {})
@@ -57,22 +57,24 @@ def normalize(obj, old_registry='', new_registry=''):
         for claim in spec.get('volumeClaimTemplates', []):
             clean_metadata(claim)
     template = spec.get('jobTemplate', {}).get('spec', {}).get('template', {}) if kind == 'CronJob' else spec.get('template', {})
-    for field in ('labels', 'annotations'):
+    for field in (('labels', 'annotations') if transform else ()):
         meta = template.get('metadata', {})
         if field in meta:
             meta[field] = {k: v for k, v in meta[field].items() if not k.startswith('openservicemesh.io/')}
             if not meta[field]:
                 meta.pop(field)
 
-    def rewrite(value):
-        if isinstance(value, dict):
-            return {k: rewrite(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [rewrite(v) for v in value]
-        if isinstance(value, str) and old_registry and new_registry:
-            return value.replace(old_registry, new_registry)
-        return value
-    return rewrite(obj)
+    # Rewrite container registry prefixes only, never ConfigMaps/Secret payloads,
+    # arbitrary strings or similar-looking hostnames.
+    if transform and old_registry and new_registry:
+        pod = template.get('spec', {})
+        for field in ('containers', 'initContainers', 'ephemeralContainers'):
+            for container in pod.get(field, []) or []:
+                image = container.get('image', '')
+                if image.startswith(old_registry.rstrip('/') + '/'):
+                    container['image'] = new_registry.rstrip('/') + image[len(old_registry.rstrip('/')):]
+    return obj
+
 
 
 def items(value):
@@ -98,6 +100,8 @@ def identity(obj):
 def safe_manifest(obj):
     obj = copy.deepcopy(obj)
     if obj.get('kind') == 'Secret':
+        if 'annotations' in obj.get('metadata', {}):
+            obj['metadata']['annotations'] = {key: '[REDACTED]' for key in obj['metadata']['annotations']}
         for key in ('data', 'stringData'):
             if key in obj:
                 obj[key] = {name: '[REDACTED]' for name in obj[key]}
@@ -106,11 +110,17 @@ def safe_manifest(obj):
 
 def difference_paths(a, b, path=''):
     if isinstance(a, dict) and isinstance(b, dict):
-        return [p for key in sorted(a.keys() | b.keys())
-                for p in difference_paths(a.get(key), b.get(key), path + '/' + key.replace('~', '~0').replace('/', '~1'))]
+        out = []
+        for key in sorted(a.keys() | b.keys()):
+            child = path + '/' + key.replace('~', '~0').replace('/', '~1')
+            out.extend([child] if key not in a or key not in b else difference_paths(a[key], b[key], child))
+        return out
     if isinstance(a, list) and isinstance(b, list):
-        return [p for i in range(max(len(a), len(b)))
-                for p in difference_paths(a[i] if i < len(a) else None, b[i] if i < len(b) else None, path + '/' + str(i))]
+        out = []
+        for i in range(max(len(a), len(b))):
+            child = path + '/' + str(i)
+            out.extend([child] if i >= len(a) or i >= len(b) else difference_paths(a[i], b[i], child))
+        return out
     return [path or '/'] if a != b else []
 
 
@@ -128,7 +138,7 @@ def analyze(source, target, namespaces, old_registry='', new_registry=''):
             if why:
                 skipped.append({'side': side, 'kind': obj['kind'], 'name': meta['name'], 'reason': why})
                 continue
-            out[identity(obj)] = normalize(obj, old_registry, new_registry)
+            out[identity(obj)] = normalize(obj, old_registry, new_registry, transform=side == 'source')
         return out
     src, dst = index(source, 'source'), index(target, 'target')
     rows = []

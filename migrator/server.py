@@ -1,11 +1,12 @@
 import argparse
 import json
+import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from .core import analyze
-from .kubernetes import ClusterError, contexts, namespaces, live_analyze, sync_plan, sync_execute
+from .kubernetes import ClusterError, contexts, namespaces, live_analyze, sync_plan, sync_execute, operation_health, rollback_plan, rollback_execute
 
-from . import jobs
+from . import jobs, history
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
@@ -16,6 +17,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, jobs.status(self.path.removeprefix('/api/jobs/')))
             except ClusterError as error:
                 self.reply(error.status, {'error': str(error)})
+        elif self.path == '/api/history':
+            try:
+                self.reply(200, history.listing())
+            except (OSError, sqlite3.Error):
+                self.reply(503, {'error': 'Local operation history is unavailable. Check state directory access.'})
         elif self.path == '/api/contexts':
             try:
                 self.reply(200, contexts())
@@ -53,7 +59,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get_content_type() != 'application/json':
             self.reply(415, {'error': 'Content-Type must be application/json.'})
             return
-        if self.path not in ('/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute', '/api/live/jobs'):
+        if self.path not in ('/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute', '/api/live/jobs', '/api/operations/health', '/api/rollback/plan', '/api/rollback/execute'):
             self.reply(404, {'error': 'Not found'})
             return
         try:
@@ -65,6 +71,12 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/live/jobs':
                 self.reply(202, jobs.start(body))
                 return
+            elif self.path == '/api/operations/health':
+                result = operation_health(body)
+            elif self.path == '/api/rollback/plan':
+                result = rollback_plan(body)
+            elif self.path == '/api/rollback/execute':
+                result = rollback_execute(body)
             elif self.path == '/api/sync/plan':
                 result = sync_plan(body)
             elif self.path == '/api/sync/execute':
@@ -82,6 +94,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(400, {'error': 'Request body must contain valid JSON.'})
         except ValueError as error:
             self.reply(400, {'error': str(error)})
+        except (OSError, sqlite3.Error):
+            self.reply(503, {'error': 'Local operation history could not be accessed. Check the state directory permissions.'})
         except (KeyError, TypeError, AttributeError):
             self.reply(400, {'error': 'Invalid input. Check manifests, contexts and namespace selection.'})
 

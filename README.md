@@ -1,163 +1,138 @@
 # AKS Cluster Workload Migrator
 
-Initial migration planner based on the aks-dev → nl-aks-dev shell workflow.
-Python 3.12+; no third-party dependencies.
+A local UI for comparing AKS resources, preparing a passive target and explicitly
+activating individual workloads. Based on the aks-dev → nl-aks-dev workflow.
+Python 3.12+; no third-party Python dependencies. Default port: **8081**.
 
-```sh
-python3 -m unittest discover -s tests -v
-python3 -m migrator.server --port 8081
-```
+## Run on Windows
 
-Open the local server in your browser when running on your own machine. Click
-**Load example**, then **Analyze migration** for a complete example. Context
-fields are descriptive labels; this release does not connect to Kubernetes.
-Paste Kubernetes **JSON** manifests (single object, array, or `kind: List`),
-select namespaces, and optionally supply a literal registry replacement.
-The report lists matches, differences, source-only and target-only resources,
-with normalized source previews and JSON download. Secrets are compared in
-memory and redacted in responses. Inputs are not persisted by the server.
-Do not submit production secrets; ConfigMaps can also contain sensitive data.
-The server binds to loopback and has no remote authentication layer.
-
-## Shared policy
-
-Supports Namespace, Deployment, StatefulSet, DaemonSet, CronJob, Service,
-ConfigMap, Secret, ServiceAccount, Role, RoleBinding, PodDisruptionBudget,
-HorizontalPodAutoscaler, NetworkPolicy and ActiveMQArtemis. Cluster-scoped AMQ
-CRDs and RBAC are intentionally excluded from this initial planner.
-Ingress remains under Terraform. Protected system namespaces, generated
-resources, service account token secrets and the legacy PostgreSQL exclusion
-are consistently excluded from both sides.
-
-Normalization strips runtime metadata, preserves StatefulSet claim templates
-and headless Services, removes OSM pod-template metadata and replaces literal
-registry strings on both sides. This is structural comparison, not Kubernetes
-semantic/defaulting equivalence. It does not validate API schemas, readiness,
-RBAC, storage compatibility or dependency order. Secret representations must
-use matching data/stringData encoding for meaningful comparison.
-
-## Original roadmap
-
-Read-only kubectl adapter with explicit context and API error handling; then
-migration plans with dry-run validation, explicit execution approval and audit
-results. Single-resource sync is now supported as described below; prune, email and
-persistent-volume/database transfer remain outside scope. Existing production scripts have not been run.
-
-## Live cluster comparison
-
-Install a kubectl version compatible with your clusters (within one minor
-version of each API server). Put it on PATH. On AKS with Entra authentication,
-also install the kubeconfig's required `kubelogin`/Azure CLI plugin and sign in
-on the machine running this application. Reuse a trusted existing kubeconfig;
-never commit kubeconfig, tokens or certificates. No credentials are uploaded
-through the UI. Kubeconfig exec plugins execute locally, so use trusted configs.
-
-```sh
-export KUBECONFIG=/path/to/existing/config
-kubectl config get-contexts -o name
-kubectl --context aks-dev --request-timeout=15s get namespaces
-kubectl --context nl-aks-dev --request-timeout=15s get namespaces
-python3 -m migrator.server --port 8081
-```
-
-Select **Live Kubernetes clusters**, load contexts, choose source and target,
-load source namespaces, enter the comparison scope and analyze. The target
-namespace may be absent; its source resources will be reported source-only.
-The service never changes current-context and only issues config reads,
-API discovery and resource GET/list operations. Reads include Secrets: use a
-suitably scoped identity. Namespace listing and discovery access are required,
-plus list access to supported resource kinds in the selected namespaces.
-Any failed resource read aborts analysis rather than treating it as empty.
-Unavailable API kinds are shown separately. Reads are sequential, non-atomic
-snapshots and may take time across many namespaces. Per-command timeout is
-25 seconds; API request timeout is 15 seconds. A maximum of 50 namespaces is
-accepted per analysis.
-
-For a private AKS endpoint, run on a machine with the required private DNS
-and network access (for example the existing migration host). Keep the server
-bound to loopback; an SSH tunnel can reach it from your workstation. It is
-not an authenticated multi-user service. No migration or deletion is executed.
-
-### Windows / PowerShell
-
-Install Python 3.12+, Git and a compatible kubectl. If your AKS kubeconfig uses
-an exec authentication plugin, install that plugin too (commonly kubelogin and
-Azure CLI). Check `kubectl version --client` and authenticate using your
-organization's existing AKS procedure. The application inherits your environment.
+Install Python, Git, a kubectl version within one minor version of your AKS API
+servers, and the authentication plugins required by your trusted kubeconfig
+(commonly Azure CLI and kubelogin). Authenticate using your organization's AKS
+procedure. Private endpoints may require corporate VPN/private DNS.
 
 ```powershell
 Set-Location C:\path\to\aks-cluster-workload-migrator
-# Optional: only needed when not using $HOME\.kube\config
+# Optional: if using a non-default kubeconfig
 $env:KUBECONFIG = "$HOME\.kube\config"
 kubectl config get-contexts -o name
-kubectl --context aks-dev --request-timeout=15s get namespaces
-kubectl --context nl-aks-dev --request-timeout=15s get namespaces
 py -3 -m unittest discover -s tests -v
 py -3 -m migrator.server --port 8081
 ```
 
-On your Windows computer, open `http://127.0.0.1:8081` in your browser. Keep
-PowerShell open while using the app. Use Ctrl+C to stop. A corporate VPN may
-be needed for private AKS DNS/endpoints. No cloud-hosted credentials are needed
-when the application runs on Windows. This Windows procedure has not been
-executed in the Linux development environment.
+Open `http://127.0.0.1:8081` on your Windows computer. Keep PowerShell open;
+Ctrl+C stops the server. After updates, restart it and refresh with Ctrl+F5.
+The server binds loopback, accepts same-origin JSON writes, and is intended for
+one local operator. Do not expose it as an unauthenticated multi-user service.
+Kubeconfig exec plugins run locally; use trusted kubeconfig files only.
 
+On Linux, use `python3` in place of `py -3`. No package installation is needed.
 
-## Side-by-side comparison and individual sync (v0.3)
+## Compare
 
-Load contexts and select exact names in the Source and Target dropdowns. The
-application does not assume a target context named `nl-aks-dev` exists. If the
-intended target is absent, use your established AKS credential setup procedure
-to add it to your local kubeconfig, then reload contexts. Selecting another
-context merely to bypass the error could point at the wrong cluster.
+1. Choose **Live Kubernetes clusters** and **Load cluster contexts**.
+2. Select actual source and target context names. A cluster's Azure name may
+   differ from its kubeconfig context. Missing contexts must first be added
+   with your established `az aks get-credentials` procedure.
+3. Load source namespaces, then enter the desired namespaces, comma separated.
+4. Optionally enter full old/new registry hostnames.
+5. Analyze. Watch the activity log, request count and elapsed times.
+6. Filter by namespace, kind and status. Filters combine locally; summary
+   cards and report downloads retain the full analysis.
+7. Click a resource for expected source-on-target (left) and current target
+   (right). Changed JSON-pointer fields appear red; Secret values are masked.
 
-Click a resource name for normalized source (left) and target (right). Changed
-JSON-pointer fields appear red, including masked Secret fields whose actual
-values differ. The source preview includes configured registry/OSM transforms.
+Offline mode accepts JSON resources, arrays or Kubernetes Lists. **Load example**
+provides a complete example. Offline mode never syncs to Kubernetes.
 
-In live mode, source resources have **Sync to target** buttons. Each click
-re-reads the source, prepares a transformed manifest and performs a target
-server-side dry-run. Review the target context, namespace, operation and masked
-manifest, then explicitly confirm. Updates use server-side apply with field
-manager `aks-migrator`, without force-conflicts. New resources use create.
-Target resourceVersion is retained for updates and checked before execution;
-changes after preview require a new preview. Plans are single-use, expire in
-five minutes and remain only in server memory. Restart discards pending plans.
+Source transformations are directional: target images/OSM labels remain visible
+as differences. Registry replacement applies only to exact registry prefixes in
+container/initContainer/ephemeralContainer image fields. ConfigMap and Secret
+contents and AMQ custom-resource fields are not rewritten. There is no automatic
+base64 credential conversion. Runtime metadata is ignored; headless Services
+and StatefulSet claim templates are preserved. Kubernetes defaulting, list
+ordering and API-version differences can still produce structural differences.
 
-Sync requires target write RBAC and a pre-existing target namespace. Namespace
-creation, bulk sync, prune and volume contents are not included. Admission,
-immutable fields and field ownership conflicts can prevent a sync; no automatic
-forced override is attempted. Sync can trigger workload rollouts. Re-analyze
-after successful sync to refresh results. These paths are tested with simulated
-kubectl responses; live writes require validation on your own clusters.
+Controller-owned resources are excluded on both sides; migrate their owning
+controller/custom resource instead. Ingress remains under Terraform. System
+namespaces, generated resources, service-account tokens and the legacy
+PostgreSQL exclusion are also skipped. AMQ CRDs, cluster RBAC, PVC/PV data,
+StorageClasses, ingress/DNS cutover and database migration are not copied.
 
-## Live analysis progress
+## Prepare, then activate
 
-Live analyses run as bounded in-memory background jobs. The UI polls progress
-roughly every 750 ms and shows the current cluster/namespace/resource request,
-total elapsed time, current-step time, completed kubectl request count and the
-latest 100 activity events. Waiting means a kubectl API/authentication response
-is pending; it is not a percentage estimate. API request timeout is 15 seconds
-and each kubectl subprocess has a 25-second limit. Comparing manifests is a
-separate stage. Backend failures and browser-to-application connection failures
-are shown separately. A disconnected browser does not cancel an active job.
-Up to four analyses run concurrently; completed jobs remain in memory for up to
-ten minutes and are removed on later submissions. Restarting loses jobs.
-No raw kubectl output, credentials or resource manifests enter the activity log.
+Click **Sync to target** and review the explicit mode before confirming:
 
-## Faster reads and result filters
+- **Prepare** (default): Deployment/StatefulSet replicas become 0; CronJobs
+  become suspended. This can stop an existing target workload. CronJob suspend
+  does not terminate already-running Jobs. ConfigMaps, Secrets and other
+  configuration resources are still applied and can affect running consumers.
+- **Activate**: apply the transformed source configuration, including its replica
+  count or CronJob suspend setting. Source workloads are not stopped. Arrange
+  traffic, scheduler and queue-consumer cutover to avoid duplicate processing.
 
-Each namespace's supported resource kinds are now requested in one kubectl
-process, reducing repeated process startup, discovery and auth-plugin overhead.
-For 16 supported kinds, resource-reading processes drop from 16 to 1 per
-namespace per cluster. Kubernetes still performs a list request for each kind;
-actual improvement depends on network and authentication latency. Failed batch
-reads abort analysis, so incomplete data is not reported as successful.
-The per-API request timeout remains 15 seconds. The overall subprocess budget
-is 25 seconds multiplied by the number of kinds in a batch (25 seconds for
-single-kind reads), accommodating the sequential API lists in that process.
+Passive mode is blocked for DaemonSet, ActiveMQArtemis and HPA because a generic
+safe passive representation is not defined. It is also blocked when an existing
+target HPA can scale the selected workload. Other reconcilers/GitOps tools must
+be coordinated separately; preparation is not a whole-cluster quiescence guarantee.
 
-Results can be filtered by namespace, resource kind and status together.
-Filters operate locally on the completed report without querying clusters.
-The visible count reflects the filters; summary cards and downloaded reports
-continue to include the full analysis. Clear filters restores all rows.
+Preflight checks required target references (ServiceAccounts, pull Secrets,
+env/volume ConfigMaps and Secrets, PVCs and explicit StatefulSet StorageClasses)
+for existence. It does not prove key contents, RBAC, storage compatibility,
+Workload Identity, Key Vault access, node scheduling, image pull, network reachability
+or application behavior. Complete those functional checks before cutover.
+
+Each preview re-reads source and target and runs server-side dry-run. Review the
+exact target, mode and masked manifest. Updates use server-side apply without
+force-conflicts; creates use create. A five-minute, single-use preview token and
+target resourceVersion checks prevent applying a stale preview. Target namespaces
+must already exist. Controller-managed targets cannot be overwritten directly.
+
+## Readiness and history
+
+An accepted API write is **Applied**, not a completed migration. The UI checks
+controller health every five seconds for about a minute. States include
+**Prepared**, **RollingOut**, **Ready**, **Failed**, **Inactive** and **Applied**.
+Use **Check readiness** in operation history to continue monitoring. Ready means
+controller readiness, not a successful application-level functional test.
+CronJob execution and AMQ operator health need separate verification.
+
+Before a write, a durable record is stored in `.state/history.sqlite3` (gitignored).
+`MIGRATOR_STATE_DIR` can select a different private directory. Backups include
+raw pre-sync non-Secret manifests and may contain sensitive configuration.
+POSIX files are created with owner-only permissions; Windows uses the directory's
+inherited ACLs. Keep this directory private and use disk encryption as appropriate.
+Raw Secret manifests are **never** persisted; Secret operations have no automatic
+rollback. Journals record source/target, mode, timestamps and write outcome.
+A timeout after write submission is **Unknown** and requires target inspection.
+
+**Preview rollback** restores the prior configuration for an updated resource or
+requests deletion of a resource created by the operation. Review and explicitly
+confirm. UID, desired-configuration fingerprint and resourceVersion guards prevent
+reverting later user/configuration changes. Controller-only status updates do not
+invalidate rollback. Updates use guarded replace; creates are undone with DELETE
+UID/resourceVersion preconditions. DeletionRequested is not proof finalizers have
+completed. RollbackApplied means the restore was accepted; check readiness again.
+Rollback does not restore database/volume data, external effects or field ownership.
+
+## Performance and limits
+
+Reads batch supported kinds into one kubectl process per namespace, avoiding
+repeated startup/auth overhead. API list calls remain sequential and snapshots
+are non-atomic. Per-API timeout: 15s; subprocess budget: 25s per kind in the batch.
+Up to 50 namespaces per analysis, four concurrent analysis jobs, and 100 latest
+activity events. Results remain in memory; old completed jobs are cleaned on
+later submissions after ten minutes. Browser disconnect does not cancel a job.
+
+## Validation
+
+```sh
+python3 -m unittest discover -s tests -v
+node --check web/app.js
+```
+
+Tests cover directional normalization, operator policy, preparation/HPA guards,
+dependency checks, write conflicts, readiness, durable snapshots, unknown outcomes
+and guarded rollback. Browser integration was exercised against simulated cluster
+responses; raw DELETE transport was checked with real kubectl against a local
+fake API. Real AKS writes and Windows execution require validation on your machine.

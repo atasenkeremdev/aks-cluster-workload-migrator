@@ -1,6 +1,8 @@
 import json
 import time
 import unittest
+import tempfile
+import os
 from unittest.mock import patch
 from migrator import kubernetes as k
 from migrator.core import analyze
@@ -16,6 +18,8 @@ def obj(kind='ConfigMap', version=None):
 class SyncTests(unittest.TestCase):
     def setUp(self):
         k._PLANS.clear()
+        temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
+        env=patch.dict(os.environ,{'MIGRATOR_STATE_DIR':temp.name});env.start();self.addCleanup(env.stop)
         self.body={'source_context':'src','target_context':'dst','namespace':'demo','name':'app','kind':'ConfigMap','apiVersion':'v1'}
 
     @patch('migrator.kubernetes.context_args', side_effect=lambda c:['--context', c])
@@ -27,8 +31,9 @@ class SyncTests(unittest.TestCase):
         self.assertIn('--dry-run=server',run.call_args.args[0])
         with self.assertRaises(ValueError):
             k.sync_execute({'token':plan['token']})
-        run.side_effect=['','{}']
-        self.assertEqual(k.sync_execute({'token':plan['token'],'confirm':True})['status'],'synced')
+        applied=obj();applied['metadata'].update(uid='uid-1',resourceVersion='2')
+        run.side_effect=['',json.dumps(applied)]
+        self.assertEqual(k.sync_execute({'token':plan['token'],'confirm':True})['status'],'Applied')
         self.assertIn('create',run.call_args.args[0])
         self.assertNotIn('--dry-run=server',run.call_args.args[0])
         with self.assertRaises(ValueError):
