@@ -42,7 +42,7 @@ $('mode').onchange=()=>{const live=$('mode').value==='live';$('json-inputs').hid
 async function clusterRequest(path,payload,timeout){const options=payload?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{};if(timeout)options.signal=AbortSignal.timeout(timeout);const response=await fetch(path,options);const data=await response.json();if(!response.ok){const error=Error(data.error);error.category=data.category;throw error;}return data;}
 let loadedContexts=[];
 $('connect').onclick=async()=>{ $('connect').disabled=true;const previousSource=$('src').value;try{const data=await clusterRequest('/api/contexts');loadedContexts=data.contexts;
-for(const id of ['src','dst']){const previous=$(id).value;$(id).replaceChildren(new Option(id==='src'?'Select source context':'Select target context',''));for(const name of loadedContexts)$(id).append(new Option(name,name));if(loadedContexts.includes(previous))$(id).value=previous;else if(id==='src'&&loadedContexts.includes('aks-dev'))$(id).value='aks-dev';}
+for(const id of ['src','dst']){const previous=$(id).value;$(id).replaceChildren(new Option(id==='src'?'Select source context':'Select target context',''));for(const name of loadedContexts)$(id).append(new Option(name,name));if(loadedContexts.includes(previous))$(id).value=previous;}
 if($('src').value!==previousSource)setNamespaces([]);updateOverview();
 $('connection').textContent=loadedContexts.length+' contexts loaded. Select the exact source and target names.';
 }catch(error){$('connection').textContent=error.message;connectionState='Unable to load contexts';}finally{$('connect').disabled=false;updateOverview();}};

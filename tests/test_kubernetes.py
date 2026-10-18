@@ -63,10 +63,10 @@ if __name__ == '__main__':
     unittest.main()
 
 class DiagnosticTests(unittest.TestCase):
-    @patch('migrator.kubernetes.run', return_value='aks-dev\n')
+    @patch('migrator.kubernetes.run', return_value='source-cluster\n')
     def test_unknown_context_has_actionable_message(self, _):
         with self.assertRaises(k.ClusterError) as error:
-            k.context_args('nl-aks-dev')
+            k.context_args('target-cluster')
         self.assertEqual(error.exception.status, 400)
         self.assertIn('Load cluster contexts', str(error.exception))
 

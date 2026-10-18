@@ -1,7 +1,7 @@
 # AKS Cluster Workload Migrator
 
 A local UI for comparing AKS resources, preparing a passive target and explicitly
-activating individual workloads. Based on the aks-dev → nl-aks-dev workflow.
+activating individual workloads. Use a source-cluster → target-cluster workflow.
 Python 3.12+; no third-party Python dependencies. Default port: **8081**.
 
 ## Run on Windows
