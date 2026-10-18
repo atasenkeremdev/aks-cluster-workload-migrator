@@ -6,6 +6,15 @@ import subprocess
 import secrets
 import time
 import threading
+from contextvars import ContextVar
+
+progress_observer = ContextVar("progress_observer", default=None)
+
+def progress(message, phase="step"):
+    observer = progress_observer.get()
+    if observer:
+        observer(message, phase)
+
 from .core import normalize, reason, safe_manifest
 from .core import KINDS, PROTECTED, analyze
 
@@ -20,6 +29,16 @@ def run(args, payload=None):
     executable = shutil.which('kubectl')
     if not executable:
         raise ClusterError('kubectl is not installed on the server.', 503)
+    label = 'kubectl request'
+    for verb in ('get-contexts', 'api-resources', 'get'):
+        if verb in args:
+            i = args.index(verb)
+            label = verb + (' ' + args[i+1] if verb == 'get' and i+1 < len(args) else '')
+            break
+    context = args[args.index('--context')+1] if '--context' in args else 'local kubeconfig'
+    ns = args[args.index('--namespace')+1] if '--namespace' in args else None
+    label = context + (' / ' + ns if ns else '') + ' · ' + label
+    progress('Waiting: ' + label, 'waiting')
     try:
         result = subprocess.run([executable, '--request-timeout=15s', *args],
                                 capture_output=True, text=True, timeout=25,
@@ -31,7 +50,9 @@ def run(args, payload=None):
     if result.returncode:
         # Never return raw plugin stderr: it can contain credentials.
         error = result.stderr.lower()
-        if 'forbidden' in error:
+        if any(text in error for text in ('timeout', 'timed out', 'deadline exceeded')):
+            message = 'Kubernetes request timed out while waiting for an API or authentication response.'
+        elif 'forbidden' in error:
             message = 'Kubernetes denied access (RBAC Forbidden).'
         elif 'unauthorized' in error or 'logged in' in error:
             message = 'Kubernetes authentication failed. Refresh server-side credentials.'
@@ -46,6 +67,7 @@ def run(args, payload=None):
         else:
             message = 'kubectl failed. Check server-side kubeconfig, credentials and network access.'
         raise ClusterError(message)
+    progress('Completed: ' + label, 'completed')
     return result.stdout
 
 
@@ -102,6 +124,7 @@ def snapshot(context, selected):
     resources = []
     for ns in selected:
         if ns not in available:
+            progress(context + ' / ' + ns + ' · namespace absent; skipping')
             continue
         resources.append(available[ns])
         for kind in kinds:
@@ -117,6 +140,7 @@ def live_analyze(body):
     validate_selection(source, target, selected)
     snapshots = []
     for side, context in [('Source', source), ('Target', target)]:
+        progress(side + ' cluster: ' + context + ' · reading snapshot')
         try:
             snapshots.append(snapshot(context.strip(), selected))
         except ClusterError as error:
@@ -124,6 +148,7 @@ def live_analyze(body):
         except (KeyError, TypeError, AttributeError, ValueError):
             raise ClusterError(f'{side} cluster returned an unexpected resource structure.') from None
     (src, src_missing), (dst, dst_missing) = snapshots
+    progress('Comparing and normalizing source and target resources', 'comparing')
     report = analyze(src, dst, selected, body.get('old_registry', ''), body.get('new_registry', ''))
     report.update(source_context=source, target_context=target,
                   unavailable_kinds={'source': src_missing, 'target': dst_missing},

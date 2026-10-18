@@ -16,8 +16,7 @@ $('planner').onsubmit = async event => {
     const live=$('mode').value==='live';
     if(live && (!loadedContexts.includes($('src').value)||!loadedContexts.includes($('dst').value))) throw Error('Load cluster contexts and select both actual context names.');
     const payload={source:live?[]:JSON.parse($('source').value),target:live?[]:JSON.parse($('target').value),source_context:$('src').value.trim(),target_context:$('dst').value.trim(),namespaces:$('namespaces').value.split(',').map(s=>s.trim()).filter(Boolean),old_registry:$('old').value.trim(),new_registry:$('new').value.trim()};
-    const response=await fetch(live?'/api/live/analyze':'/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    const data=await response.json(); if(!response.ok) throw Error(data.error);
+    const data=live?await analyzeWithProgress(payload):await clusterRequest('/api/analyze',payload);
     analyzedPayload=live?structuredClone(payload):null;
     report={...data,source_context:$('src').value,target_context:$('dst').value};
     $('report-notice').textContent=data.notice+(data.unavailable_kinds?' Unavailable API kinds: source: '+data.unavailable_kinds.source.join(', ')+ '; target: '+data.unavailable_kinds.target.join(', '):'');
@@ -33,7 +32,7 @@ $('planner').onsubmit = async event => {
 $('download').onclick=()=>{if(!report)return;const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='migration-report.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 
 $('mode').onchange=()=>{const live=$('mode').value==='live';$('json-inputs').hidden=live;for(const id of ['source','target'])$(id).required=!live;$('results').hidden=true;};
-async function clusterRequest(path,payload){const response=await fetch(path,payload?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{});const data=await response.json();if(!response.ok)throw Error(data.error);return data;}
+async function clusterRequest(path,payload,timeout){const options=payload?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{};if(timeout)options.signal=AbortSignal.timeout(timeout);const response=await fetch(path,options);const data=await response.json();if(!response.ok)throw Error(data.error);return data;}
 let loadedContexts=[];
 $('connect').onclick=async()=>{ $('connect').disabled=true;try{const data=await clusterRequest('/api/contexts');loadedContexts=data.contexts;
 for(const id of ['src','dst']){const previous=$(id).value;$(id).replaceChildren(new Option(id==='src'?'Select source context':'Select target context',''));for(const name of loadedContexts)$(id).append(new Option(name,name));if(loadedContexts.includes(previous))$(id).value=previous;else if(id==='src'&&loadedContexts.includes('aks-dev'))$(id).value='aks-dev';}
@@ -52,3 +51,27 @@ $('sync-cancel').onclick=()=>{pendingPlan=null;$('sync-dialog').close();};
 $('sync-confirm').onclick=async()=>{if(!pendingPlan)return;$('sync-confirm').disabled=true;try{await clusterRequest('/api/sync/execute',{token:pendingPlan.token,confirm:true});pendingPlan=null;$('sync-dialog').close();$('sync-status').textContent='Synced successfully. Run Analyze migration again to refresh both sides.';}catch(error){$('sync-dialog').close();pendingPlan=null;$('sync-status').textContent=error.message;}finally{$('sync-confirm').disabled=false;}};
 
 for(const [id,label] of [['src','Offline source'],['dst','Offline target']]){$(id).append(new Option(label,label));$(id).value=label;}
+
+async function analyzeWithProgress(payload){
+  $('analysis-progress').hidden=false;
+  $('progress-title').textContent='Analyzing clusters…';
+  $('progress-current').textContent='Submitting analysis';
+  $('progress-stats').textContent='';$('progress-wait').textContent='';$('progress-log').textContent='';
+  let lastStatus=null,receivedAt=0;
+  const paint=()=>{if(!lastStatus)return;const extra=lastStatus.state==='running'?(Date.now()-receivedAt)/1000:0;const elapsed=lastStatus.elapsed_seconds+extra,step=lastStatus.step_seconds+extra;
+    $('progress-current').textContent=lastStatus.current;
+    $('progress-stats').textContent=`Elapsed: ${Math.floor(elapsed)}s · Current step: ${Math.floor(step)}s · Completed kubectl requests: ${lastStatus.completed_commands}`;
+    $('progress-wait').textContent=lastStatus.state==='running'&&lastStatus.phase==='waiting'?'Waiting for kubectl/API or authentication response. API request timeout: 15s; subprocess timeout: 25s.':lastStatus.phase==='comparing'?'Cluster reads finished; comparing manifests.':'';
+    if(lastStatus.state==='running'&&extra>5)$('progress-wait').textContent+=' Progress updates delayed; checking the local application connection.';
+  };
+  const timer=setInterval(paint,500);
+  try{
+    const job=await clusterRequest('/api/live/jobs',payload,10000);
+    while(true){lastStatus=await clusterRequest('/api/jobs/'+encodeURIComponent(job.job_id),null,5000);receivedAt=Date.now();paint();
+      $('progress-log').textContent=lastStatus.events.map(e=>`[${e.elapsed.toFixed(1)}s] ${e.message}`).join('\n');$('progress-log').scrollTop=$('progress-log').scrollHeight;
+      if(lastStatus.state==='completed'){$('progress-title').textContent='Analysis complete';$('progress-wait').textContent='';return lastStatus.result;}
+      if(lastStatus.state==='failed')throw Error(lastStatus.error);
+      await new Promise(resolve=>setTimeout(resolve,750));
+    }
+  }catch(error){$('progress-title').textContent=lastStatus?.state==='failed'?'Analysis failed':'Application connection interrupted';$('progress-wait').textContent=lastStatus?.state==='failed'?'Analysis stopped at the step shown above.':'The server analysis may still be running; check the local application connection.';throw error;}finally{clearInterval(timer);}
+}

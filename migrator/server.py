@@ -5,11 +5,18 @@ from pathlib import Path
 from .core import analyze
 from .kubernetes import ClusterError, contexts, namespaces, live_analyze, sync_plan, sync_execute
 
+from . import jobs
+
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == '/api/contexts':
+        if self.path.startswith('/api/jobs/'):
+            try:
+                self.reply(200, jobs.status(self.path.removeprefix('/api/jobs/')))
+            except ClusterError as error:
+                self.reply(error.status, {'error': str(error)})
+        elif self.path == '/api/contexts':
             try:
                 self.reply(200, contexts())
             except ClusterError as error:
@@ -46,7 +53,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get_content_type() != 'application/json':
             self.reply(415, {'error': 'Content-Type must be application/json.'})
             return
-        if self.path not in ('/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute'):
+        if self.path not in ('/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute', '/api/live/jobs'):
             self.reply(404, {'error': 'Not found'})
             return
         try:
@@ -55,7 +62,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(413, {'error': 'JSON payload must be between 1 byte and 5 MB'})
                 return
             body = json.loads(self.rfile.read(length))
-            if self.path == '/api/sync/plan':
+            if self.path == '/api/live/jobs':
+                self.reply(202, jobs.start(body))
+                return
+            elif self.path == '/api/sync/plan':
                 result = sync_plan(body)
             elif self.path == '/api/sync/execute':
                 result = sync_execute(body)

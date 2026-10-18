@@ -130,3 +130,17 @@ immutable fields and field ownership conflicts can prevent a sync; no automatic
 forced override is attempted. Sync can trigger workload rollouts. Re-analyze
 after successful sync to refresh results. These paths are tested with simulated
 kubectl responses; live writes require validation on your own clusters.
+
+## Live analysis progress
+
+Live analyses run as bounded in-memory background jobs. The UI polls progress
+roughly every 750 ms and shows the current cluster/namespace/resource request,
+total elapsed time, current-step time, completed kubectl request count and the
+latest 100 activity events. Waiting means a kubectl API/authentication response
+is pending; it is not a percentage estimate. API request timeout is 15 seconds
+and each kubectl subprocess has a 25-second limit. Comparing manifests is a
+separate stage. Backend failures and browser-to-application connection failures
+are shown separately. A disconnected browser does not cancel an active job.
+Up to four analyses run concurrently; completed jobs remain in memory for up to
+ten minutes and are removed on later submissions. Restarting loses jobs.
+No raw kubectl output, credentials or resource manifests enter the activity log.
