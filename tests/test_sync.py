@@ -35,6 +35,7 @@ class SyncTests(unittest.TestCase):
         run.side_effect=['',json.dumps(applied)]
         self.assertEqual(k.sync_execute({'token':plan['token'],'confirm':True})['status'],'Applied')
         self.assertIn('create',run.call_args.args[0])
+        self.assertIn('--field-manager=aks-migrator',run.call_args.args[0])
         self.assertNotIn('--dry-run=server',run.call_args.args[0])
         with self.assertRaises(ValueError):
             k.sync_execute({'token':plan['token'],'confirm':True})
@@ -45,7 +46,8 @@ class SyncTests(unittest.TestCase):
         run.side_effect=[json.dumps(obj()),json.dumps(obj(version='1')),'{}']
         plan=k.sync_plan(self.body)
         self.assertEqual(run.call_args.args[1]['metadata']['resourceVersion'],'1')
-        run.side_effect=[json.dumps(obj(version='2'))]
+        changed=obj(version='2');changed['data']['key']='CHANGED'
+        run.side_effect=[json.dumps(changed)]
         with self.assertRaises(k.ClusterError) as error:
             k.sync_execute({'token':plan['token'],'confirm':True})
         self.assertEqual(error.exception.status,409)

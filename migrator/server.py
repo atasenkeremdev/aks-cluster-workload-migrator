@@ -16,7 +16,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self.reply(200, jobs.status(self.path.removeprefix('/api/jobs/')))
             except ClusterError as error:
-                self.reply(error.status, {'error': str(error)})
+                self.reply(error.status, {'error': str(error), 'category': error.category})
         elif self.path == '/api/history':
             try:
                 self.reply(200, history.listing())
@@ -26,7 +26,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self.reply(200, contexts())
             except ClusterError as error:
-                self.reply(error.status, {'error': str(error)})
+                self.reply(error.status, {'error': str(error), 'category': error.category})
         elif self.path == '/health':
             self.reply(200, {'status': 'ok'})
         elif self.path in ('/', '/app.js', '/style.css'):
@@ -89,11 +89,11 @@ class Handler(BaseHTTPRequestHandler):
                 result = analyze(body['source'], body['target'], body['namespaces'], body.get('old_registry', ''), body.get('new_registry', ''))
             self.reply(200, result)
         except ClusterError as error:
-            self.reply(error.status, {'error': str(error)})
+            self.reply(error.status, {'error': str(error), 'category': error.category})
         except json.JSONDecodeError:
             self.reply(400, {'error': 'Request body must contain valid JSON.'})
         except ValueError as error:
-            self.reply(400, {'error': str(error)})
+            self.reply(400, {'error': str(error), 'category': error.category})
         except (OSError, sqlite3.Error):
             self.reply(503, {'error': 'Local operation history could not be accessed. Check the state directory permissions.'})
         except (KeyError, TypeError, AttributeError):

@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from playwright.sync_api import sync_playwright
 from migrator.server import Handler
 from migrator.core import analyze
+from migrator.kubernetes import ClusterError
 
 
 class WorkspaceBrowserTests(unittest.TestCase):
@@ -54,6 +55,8 @@ class WorkspaceBrowserTests(unittest.TestCase):
             return {'apiVersion':'v1', 'kind':'ConfigMap', 'metadata':{'name':name, 'namespace':'demo'}, 'data':{'value':value}}
         report = analyze([obj('matching'), obj('different'), obj('source-only')],
                          [obj('matching'), obj('different', '2'), obj('target-only')], ['demo'])
+        self.assertEqual(page.locator('html').get_attribute('lang'),'en')
+        self.assertNotRegex(page.locator('body').inner_text(),r'[çğıöşüÇĞİÖŞÜ]')
         self.assertEqual(page.locator('#mode').input_value(), 'live')
         page.locator('#advanced>summary').click()
         page.select_option('#mode', 'offline')
@@ -79,7 +82,7 @@ class WorkspaceBrowserTests(unittest.TestCase):
         self.assertEqual(page.locator('#rows .resource-row').count(), 4)
         page.click('#overview-mode')
         page.select_option('#sync-mode', 'activate')
-        self.assertEqual(page.locator('#overview-mode').inner_text(), 'Aktifleştir')
+        self.assertEqual(page.locator('#overview-mode').inner_text(), 'Activate')
         page.click('#step-scope')
         page.fill('#new', 'another.example')
         page.locator('#old').click()
@@ -120,8 +123,8 @@ class WorkspaceBrowserTests(unittest.TestCase):
         page.click('#submit')
         page.wait_for_function("document.querySelector('#progress-current').textContent.includes('Waiting: source')")
         self.assertTrue(page.locator('#analysis-progress').is_visible())
-        self.assertIn('bekleniyor', page.locator('#progress-wait').inner_text())
-        self.assertIn('Analiz', page.locator('#overview-activity').inner_text())
+        self.assertIn('Waiting', page.locator('#progress-wait').inner_text())
+        self.assertIn('Analyzing', page.locator('#overview-activity').inner_text())
         self.assertFalse(page.locator('#analysis-progress details').evaluate('(element)=>element.open'))
         self.assertEqual(submitted[0]['namespaces'], ['alpha','beta','gamma'])
         complete.set()
@@ -139,7 +142,9 @@ class WorkspaceBrowserTests(unittest.TestCase):
                 return 'source\ntarget\n'
             if 'api-resources' in args:
                 return 'deployments deploy apps/v1 true Deployment get,list\n'
-            if any(action in args for action in ('create', 'apply', 'replace')):
+            if any(action in args for action in ('create', 'apply', 'replace', 'patch')):
+                if 'apply' in args and '--dry-run=server' in args and payload['spec']['replicas']==2:
+                    raise ClusterError('Server-side apply field ownership conflict. Field manager: terraform.',409,'field_ownership')
                 result = copy.deepcopy(payload)
                 result['metadata'].update(uid='target', resourceVersion=str(state['version']+1), generation=state['version']+1)
                 replicas = result['spec']['replicas']
@@ -173,7 +178,7 @@ class WorkspaceBrowserTests(unittest.TestCase):
             page.wait_for_selector('#results', state='visible')
             page.locator('[data-sync]').click()
             page.wait_for_selector('#sync-dialog', state='visible')
-            self.assertIn('pasif', page.locator('#confirm-title').inner_text())
+            self.assertIn('passive', page.locator('#confirm-title').inner_text())
             self.assertIn('target / demo', page.locator('#sync-description').inner_text())
             page.click('#sync-confirm')
             page.wait_for_function("document.querySelector('#history-rows').textContent.includes('Prepared')")
@@ -181,18 +186,22 @@ class WorkspaceBrowserTests(unittest.TestCase):
             page.click('#overview-mode')
             page.select_option('#sync-mode', 'activate')
             page.click('#step-compare')
-            self.assertEqual(page.locator('[data-sync]').inner_text(), 'Aktifleştir')
+            self.assertEqual(page.locator('[data-sync]').inner_text(), 'Activate')
             page.locator('[data-sync]').click()
+            page.wait_for_selector('#preview-guarded', state='visible')
+            self.assertEqual(state['target']['spec']['replicas'],0)
+            page.click('#preview-guarded')
             page.wait_for_selector('#sync-dialog', state='visible')
-            self.assertIn('çift işlem', page.locator('#confirm-impact').inner_text())
+            self.assertIn('overwrites submitted fields',page.locator('#sync-warnings').inner_text())
+            self.assertIn('duplicate processing', page.locator('#confirm-impact').inner_text())
             page.click('#sync-confirm')
             page.wait_for_function("document.querySelector('#overview-activity').textContent==='Ready'")
             self.assertEqual(state['target']['spec']['replicas'], 2)
             page.click('#step-execute')
             page.locator('#history-details>summary').click()
-            page.locator('#history-rows tr').first.get_by_text('Geri almayı önizle').click()
+            page.locator('#history-rows tr').first.get_by_text('Preview rollback').click()
             page.wait_for_selector('#sync-dialog', state='visible')
-            self.assertIn('öncesindeki', page.locator('#confirm-impact').inner_text())
+            self.assertIn('pre-sync', page.locator('#confirm-impact').inner_text())
             page.click('#sync-confirm')
             page.wait_for_function("document.querySelector('#history-rows').textContent.includes('RollbackApplied')")
             self.assertEqual(state['target']['spec']['replicas'], 0)

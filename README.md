@@ -30,36 +30,36 @@ On Linux, use `python3` in place of `py -3`. No package installation is needed.
 
 ## Compare
 
-The workspace follows three stages: **Kapsam seç → Karşılaştır → Hazırla /
-Aktifleştir**. Live mode is selected initially. The sticky overview keeps source,
+The workspace follows three stages: **Select scope → Compare → Prepare /
+Activate**. Live mode is selected initially. The sticky overview keeps source,
 target, namespace count, action mode, connection and current activity visible.
 
-1. Click **Context'leri yükle** and select actual source and target context names.
+1. Click **Load cluster contexts** and select actual source and target context names.
    A cluster's Azure name may differ from its kubeconfig context. Missing
    contexts must first be added with your `az aks get-credentials` procedure.
-2. Click **Kaynak namespace'lerini yükle** and choose namespaces in the searchable
+2. Click **Load source namespaces** and choose namespaces in the searchable
    multi-select. Select all includes entries hidden by search. Changing source
    clears the old list.
-3. Open **Gelişmiş ayarlar** only when registry rewriting or offline JSON is
+3. Open **Advanced settings** only when registry rewriting or offline JSON is
    needed. Enter full old/new registry hostnames to rewrite container images.
 4. Start comparison. The scope folds after success. Progress and elapsed times
    stay visible while reading; detailed logs are collapsed by default.
-5. Results align source and target resources in two columns. **Yalnızca farklar**
+5. Results align source and target resources in two columns. **Differences only**
    initially hides MATCH; turn it off or select MATCH status to inspect matches.
    Name/namespace search combines with namespace, kind and status filters.
    Resetting filters restores the differences-first view. Summary cards and
    downloads retain the full analysis.
 6. Click either resource name for expected source-on-target (left) and current
    target (right). Changed fields appear red and Secret values are masked.
-7. Choose **Pasif hazırla** or **Aktifleştir** in stage three (also reachable
+7. Choose **Prepare target** or **Activate** in stage three (also reachable
    through the mode button in the sticky overview). Eligible source actions use
    that mode and appear only for DIFF/SOURCE_ONLY. MATCH and target-only resources
    never get action buttons. Changing scope invalidates old actions until the
    comparison is rerun.
 
-Offline mode is under **Gelişmiş ayarlar** and accepts JSON resources, arrays or
-Kubernetes Lists. **Örnek yükle** provides a complete example. For pasted JSON,
-click **JSON’dan namespace yükle** and choose the desired namespaces. Offline mode never syncs to Kubernetes.
+Offline mode is under **Advanced settings** and accepts JSON resources, arrays or
+Kubernetes Lists. **Load example** provides a complete example. For pasted JSON,
+click **Load namespaces from JSON** and choose the desired namespaces. Offline mode never syncs to Kubernetes.
 
 Source transformations are directional: target images/OSM labels remain visible
 as differences. Registry replacement applies only to exact registry prefixes in
@@ -79,11 +79,11 @@ StorageClasses, ingress/DNS cutover and database migration are not copied.
 
 Use the source resource action and review the explicit mode before confirming:
 
-- **Pasif hazırla / Prepare** (default): Deployment/StatefulSet replicas become 0; CronJobs
+- **Prepare target / Prepare** (default): Deployment/StatefulSet replicas become 0; CronJobs
   become suspended. This can stop an existing target workload. CronJob suspend
   does not terminate already-running Jobs. ConfigMaps, Secrets and other
   configuration resources are still applied and can affect running consumers.
-- **Aktifleştir / Activate**: apply the transformed source configuration, including its replica
+- **Activate / Activate**: apply the transformed source configuration, including its replica
   count or CronJob suspend setting. Source workloads are not stopped. Arrange
   traffic, scheduler and queue-consumer cutover to avoid duplicate processing.
 
@@ -99,17 +99,38 @@ Workload Identity, Key Vault access, node scheduling, image pull, network reacha
 or application behavior. Complete those functional checks before cutover.
 
 Each preview re-reads source and target and runs server-side dry-run. Review the
-exact target, mode and masked manifest. Updates use server-side apply without
-force-conflicts; creates use create. A five-minute, single-use preview token and
-target resourceVersion checks prevent applying a stale preview. Target namespaces
+exact target, mode and masked manifest. Updates default to server-side apply without force-conflicts. Creates and updates
+use the same `aks-migrator` field manager. A five-minute, single-use preview token and
+target identity/configuration checks prevent applying a stale preview. Status-only
+controller changes can refresh resourceVersion; the actual write still uses an
+atomic resourceVersion precondition. Target namespaces
 must already exist. Controller-managed targets cannot be overwritten directly.
+
+### Resolving activation conflicts
+
+Field-ownership conflicts and stale resourceVersion conflicts are reported
+separately. Ownership errors show the field-manager names when available;
+raw kubectl stderr and credential values are never shown.
+
+If **Activate** reports a field-ownership conflict, click **Preview guarded merge
+update** (or select **Guarded merge update** under Existing target update method).
+This is an explicit alternative, not an automatic retry with force-conflicts.
+It previews a JSON merge patch that overwrites submitted fields, preserves omitted
+target fields and replaces submitted lists in full. Review the affected resource
+and confirm before executing. HPA, Terraform or GitOps may subsequently reconcile
+those fields; coordinate ownership with their operators before cutover.
+
+Controller-only status updates no longer invalidate otherwise unchanged previews.
+Preview retries once after refreshing a version if only status changed. Changes
+to desired configuration or object identity still block the operation. A write
+rejected with a known conflict is recorded as **Conflict**, not **Unknown**.
 
 ## Readiness and history
 
 An accepted API write is **Applied**, not a completed migration. The UI checks
 controller health every five seconds for about a minute. States include
 **Prepared**, **RollingOut**, **Ready**, **Failed**, **Inactive** and **Applied**.
-Use **Durumu kontrol et** in operation history to continue monitoring. Ready means
+Use **Check readiness** in operation history to continue monitoring. Ready means
 controller readiness, not a successful application-level functional test.
 CronJob execution and AMQ operator health need separate verification.
 
@@ -118,11 +139,14 @@ Before a write, a durable record is stored in `.state/history.sqlite3` (gitignor
 raw pre-sync non-Secret manifests and may contain sensitive configuration.
 POSIX files are created with owner-only permissions; Windows uses the directory's
 inherited ACLs. Keep this directory private and use disk encryption as appropriate.
-Raw Secret manifests are **never** persisted; Secret operations have no automatic
-rollback. Journals record source/target, mode, timestamps and write outcome.
+Raw Secret manifests are **never** stored in the journal; Secret operations have
+no automatic rollback. Guarded merge stages its input in a private temporary
+file (owner-only on POSIX, inherited private-directory ACLs on Windows), then
+removes it after kubectl returns, including errors and timeouts. Secret values
+are kept out of process command arguments. Journals record source/target, mode, timestamps and write outcome.
 A timeout after write submission is **Unknown** and requires target inspection.
 
-**Geri almayı önizle** restores the prior configuration for an updated resource or
+**Preview rollback** restores the prior configuration for an updated resource or
 requests deletion of a resource created by the operation. Review and explicitly
 confirm. UID, desired-configuration fingerprint and resourceVersion guards prevent
 reverting later user/configuration changes. Controller-only status updates do not
@@ -140,7 +164,7 @@ expected impact; technical manifests and log details stay expandable.
 ## Performance and limits
 
 Reads batch supported kinds into one kubectl process per namespace, avoiding
-repeated startup/auth overhead. API list calls remain sequential and snapshots
+repeated startup/auth overhead. API list calls remain sequential andsapshots
 are non-atomic. Per-API timeout: 15s; subprocess budget: 25s per kind in the batch.
 Up to 200 namespaces per analysis, four concurrent analysis jobs, and 100 latest
 activity events. Results remain in memory; old completed jobs are cleaned on
@@ -154,7 +178,7 @@ node --check web/app.js
 ```
 
 Tests cover directional normalization, operator policy, preparation/HPA guards,
-dependency checks, write conflicts, readiness, durable snapshots, unknown outcomes
+dependency checks, write conflicts, readiness, durablesapshots, unknown outcomes
 and guarded rollback. Browser integration was exercised against simulated cluster
 responses; raw DELETE transport was checked with real kubectl against a local
 fake API. Real AKS writes and Windows execution require validation on your machine.

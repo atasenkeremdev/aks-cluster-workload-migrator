@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="tr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -10,82 +10,82 @@
 <aside>
   <a class="brand" href="/">◈ <span>AKS Migrator</span></a>
   <p class="nav-label">WORKSPACE</p>
-  <a class="nav-item" href="#scope">Migration planı</a>
-  <a class="nav-item secondary" href="#operations">İşlem geçmişi</a>
-  <div class="sidebar-note">Her değişiklik önce önizlenir.<br>Kaynak cluster otomatik durdurulmaz.</div>
+  <a class="nav-item" href="#scope">Migration plan</a>
+  <a class="nav-item secondary" href="#operations">Operation history</a>
+  <div class="sidebar-note">Preview every change first.<br>The source cluster is never stopped automatically.</div>
   <small>v0.5 · Prepare & activate</small>
 </aside>
 <main>
-  <header class="workspace-header"><span>WORKLOAD MIGRATION</span><span class="local-badge">● Yerel çalışma alanı</span></header>
-  <section class="migration-bar" aria-label="Migration özeti">
-    <div class="route"><div><span class="eyebrow">SOURCE</span><strong id="overview-source">Kaynak seçilmedi</strong></div><span class="route-arrow">→</span><div><span class="eyebrow">TARGET</span><strong id="overview-target">Hedef seçilmedi</strong></div></div>
-    <div class="overview-meta"><span id="overview-namespaces">0 namespace</span><button id="overview-mode" type="button" title="İşlem modunu değiştir">Pasif hazırla</button><span id="overview-activity" role="status">İşlem bekleniyor</span><span id="overview-connection" class="connection-badge">Bağlantı bekleniyor</span></div>
+  <header class="workspace-header"><span>WORKLOAD MIGRATION</span><span class="local-badge">● Local workspace</span></header>
+  <section class="migration-bar" aria-label="Migration overview">
+    <div class="route"><div><span class="eyebrow">SOURCE</span><strong id="overview-source">Select a source</strong></div><span class="route-arrow">→</span><div><span class="eyebrow">TARGET</span><strong id="overview-target">Select a target</strong></div></div>
+    <div class="overview-meta"><span id="overview-namespaces">0 namespace</span><button id="overview-mode" type="button" title="Change action mode">Prepare target</button><span id="overview-activity" role="status">No operation running</span><span id="overview-connection" class="connection-badge">Connection pending</span></div>
   </section>
-  <div class="page-heading"><div><span class="eyebrow">MIGRATION WORKSPACE</span><h1>Karşılaştır. Hazırla. Geçiş yap.</h1><p class="muted">Önce farkları incele, sonra yalnızca seçtiğin kaynakları hedefe uygula.</p></div></div>
-  <nav class="steps" aria-label="Migration aşamaları">
-    <button id="step-scope" type="button" class="step active" aria-current="step"><span>1</span><div><strong>Kapsam seç</strong><small>Cluster ve namespace'ler</small></div></button>
-    <button id="step-compare" type="button" class="step" disabled><span>2</span><div><strong>Karşılaştır</strong><small>Farkları yan yana incele</small></div></button>
-    <button id="step-execute" type="button" class="step"><span>3</span><div><strong>Hazırla / Aktifleştir</strong><small>Önizleme, onay ve takip</small></div></button>
+  <div class="page-heading"><div><span class="eyebrow">MIGRATION WORKSPACE</span><h1>Compare. Prepare. Migrate.</h1><p class="muted">Review differences, then apply only the resources you choose.</p></div></div>
+  <nav class="steps" aria-label="Migration stages">
+    <button id="step-scope" type="button" class="step active" aria-current="step"><span>1</span><div><strong>Select scope</strong><small>Clusters and namespaces</small></div></button>
+    <button id="step-compare" type="button" class="step" disabled><span>2</span><div><strong>Compare</strong><small>Review differences side by side</small></div></button>
+    <button id="step-execute" type="button" class="step"><span>3</span><div><strong>Prepare / Activate</strong><small>Preview, confirm and monitor</small></div></button>
   </nav>
   <form id="planner">
     <details id="scope" class="card scope-card" open>
-      <summary class="section-summary"><span><span class="section-number">01</span> Migration kapsamı</span><span class="muted">Düzenle / daralt</span></summary>
+      <summary class="section-summary"><span><span class="section-number">01</span> Migration scope</span><span class="muted">Edit / collapse</span></summary>
       <div class="scope-content">
-        <div class="section-toolbar"><p class="muted">Mevcut kubeconfig context'lerinden kaynak ve hedefi seç.</p><button type="button" id="connect">Context'leri yükle</button></div>
-        <p id="connection" class="muted" role="status">Başlamak için context listesini yükle.</p>
+        <div class="section-toolbar"><p class="muted">Choose source and target from your existing kubeconfig contexts.</p><button type="button" id="connect">Load cluster contexts</button></div>
+        <p id="connection" class="muted" role="status">Load contexts to get started.</p>
         <div class="grid">
-          <label>Source context<select id="src" required><option value="">Kaynak context seç</option></select></label>
-          <label>Target context<select id="dst" required><option value="">Hedef context seç</option></select></label>
+          <label>Source context<select id="src" required><option value="">Select source context</option></select></label>
+          <label>Target context<select id="dst" required><option value="">Select target context</option></select></label>
         </div>
-        <div class="namespace-scope"><div class="namespace-field"><span id="namespace-label">Namespace'ler</span>
-          <details id="namespace-dropdown"><summary id="namespace-summary" aria-labelledby="namespace-label namespace-summary-text"><span id="namespace-summary-text">Namespace seç</span></summary>
-            <div class="namespace-menu"><input id="namespace-search" type="search" aria-label="Namespace ara" placeholder="Namespace ara…"><div class="namespace-tools"><label><input id="namespace-all" type="checkbox"> Select all</label><button id="namespace-clear" type="button">Seçimi temizle</button></div><div id="namespace-list" role="group" aria-label="Kullanılabilir namespace'ler"></div><p id="namespace-empty" class="muted">Önce kaynak namespace'lerini yükle.</p></div>
-          </details><small id="namespace-count" role="status">0 seçili · en fazla 200</small>
-        </div><div class="namespace-load"><button type="button" id="load-namespaces">Kaynak namespace'lerini yükle</button><button id="namespace-from-json" type="button" hidden>JSON'dan namespace yükle</button><p id="namespace-options" class="muted"></p></div></div>
-        <details id="advanced" class="advanced"><summary>Gelişmiş ayarlar <span class="muted">Registry dönüşümü ve offline JSON</span></summary>
-          <div class="advanced-content"><div class="grid"><label>Veri kaynağı<select id="mode"><option value="live" selected>Live Kubernetes clusters</option><option value="offline">Offline JSON manifests</option></select></label><div class="muted">Canlı bağlantı, bu uygulamanın çalıştığı bilgisayarın kubeconfig ve oturumunu kullanır.</div><label>Eski registry<input id="old" placeholder="old.registry.example"></label><label>Yeni registry<input id="new" placeholder="new.registry.example"></label></div>
-          <section id="json-inputs" hidden><div class="title"><h3>Offline manifestler</h3><button type="button" id="demo">Örnek yükle</button></div><p class="muted">JSON resource, array veya Kubernetes List kullan. Gerçek üretim Secret değerlerini yapıştırma.</p><div class="grid"><label>Source JSON<textarea id="source" spellcheck="false" placeholder='{"kind":"List","items":[]}'></textarea></label><label>Target JSON<textarea id="target" spellcheck="false" placeholder='{"kind":"List","items":[]}'></textarea></label></div></section></div>
+        <div class="namespace-scope"><div class="namespace-field"><span id="namespace-label">Namespaces</span>
+          <details id="namespace-dropdown"><summary id="namespace-summary" aria-labelledby="namespace-label namespace-summary-text"><span id="namespace-summary-text">Select namespaces</span></summary>
+            <div class="namespace-menu"><input id="namespace-search" type="search" aria-label="Search namespaces" placeholder="Search namespaces…"><div class="namespace-tools"><label><input id="namespace-all" type="checkbox"> Select all</label><button id="namespace-clear" type="button">Clear selection</button></div><div id="namespace-list" role="group" aria-label="Available namespaces"></div><p id="namespace-empty" class="muted">Load source namespaces first.</p></div>
+          </details><small id="namespace-count" role="status">0 selected · maximum 200</small>
+        </div><div class="namespace-load"><button type="button" id="load-namespaces">Load source namespaces</button><button id="namespace-from-json" type="button" hidden>Load namespaces from JSON</button><p id="namespace-options" class="muted"></p></div></div>
+        <details id="advanced" class="advanced"><summary>Advanced settings <span class="muted">Registry rewrite and offline JSON</span></summary>
+          <div class="advanced-content"><div class="grid"><label>Data source<select id="mode"><option value="live" selected>Live Kubernetes clusters</option><option value="offline">Offline JSON manifests</option></select></label><div class="muted">Live mode uses kubeconfig and authentication on the computer running this application.</div><label>Old registry<input id="old" placeholder="old.registry.example"></label><label>New registry<input id="new" placeholder="new.registry.example"></label></div>
+          <section id="json-inputs" hidden><div class="title"><h3>Offline manifests</h3><button type="button" id="demo">Load example</button></div><p class="muted">Use a JSON resource, array or Kubernetes List. Do not paste production Secret values.</p><div class="grid"><label>Source JSON<textarea id="source" spellcheck="false" placeholder='{"kind":"List","items":[]}'></textarea></label><label>Target JSON<textarea id="target" spellcheck="false" placeholder='{"kind":"List","items":[]}'></textarea></label></div></section></div>
         </details>
-        <div class="actions"><p id="error" role="alert"></p><button class="primary" id="submit">Karşılaştırmayı başlat →</button></div>
+        <div class="actions"><p id="error" role="alert"></p><button class="primary" id="submit">Analyze migration →</button></div>
       </div>
     </details>
   </form>
-  <section id="analysis-progress" class="progress-panel" hidden aria-label="Analiz ilerlemesi">
-    <div class="progress-heading"><span id="progress-indicator" class="pulse-dot"></span><h2 id="progress-title" role="status">Cluster'lar analiz ediliyor</h2><span id="progress-stats" class="muted"></span></div>
+  <section id="analysis-progress" class="progress-panel" hidden aria-label="Analysis progress">
+    <div class="progress-heading"><span id="progress-indicator" class="pulse-dot"></span><h2 id="progress-title" role="status">Analyzing clusters</h2><span id="progress-stats" class="muted"></span></div>
     <p id="progress-current"></p><p id="progress-wait" class="muted"></p>
-    <details><summary>Teknik işlem günlüğü · son 100 olay</summary><pre id="progress-log"></pre></details>
+    <details><summary>Technical activity log · latest 100 events</summary><pre id="progress-log"></pre></details>
   </section>
   <section id="results" hidden>
-    <div class="section-heading"><div><span class="eyebrow">02 / KARŞILAŞTIR</span><h2>Kaynaklar yan yana.</h2></div><button id="download" type="button">Raporu indir ↓</button></div>
-    <p id="scope-stale" class="warning" hidden>Kapsam değişti. İşlem yapmadan önce karşılaştırmayı yeniden başlat.</p>
+    <div class="section-heading"><div><span class="eyebrow">02 / COMPARE</span><h2>Resources, side by side.</h2></div><button id="download" type="button">Download report ↓</button></div>
+    <p id="scope-stale" class="warning" hidden>Scope changed. Run the comparison again before applying changes.</p>
     <div id="summary" class="metrics"></div>
     <div class="card comparison-card">
-      <div class="comparison-controls"><label class="search-field">Kaynak ara<input id="resource-search" type="search" placeholder="Kaynak adı veya namespace…"></label><label class="check-label"><input id="differences-only" type="checkbox" checked> Yalnızca farklar</label></div>
-      <div class="result-filters"><label>Namespace<select id="filter-namespace"><option value="">Tüm namespace'ler</option></select></label><label>Kind<select id="filter-kind"><option value="">Tüm kind'lar</option></select></label><label>Durum<select id="filter-status"><option value="">Tüm durumlar</option></select></label><button id="clear-filters" type="button">Filtreleri sıfırla</button></div>
+      <div class="comparison-controls"><label class="search-field">Search resources<input id="resource-search" type="search" placeholder="Resource name or namespace…"></label><label class="check-label"><input id="differences-only" type="checkbox" checked> Differences only</label></div>
+      <div class="result-filters"><label>Namespace<select id="filter-namespace"><option value="">All namespaces</option></select></label><label>Kind<select id="filter-kind"><option value="">All kinds</option></select></label><label>Status<select id="filter-status"><option value="">All statuses</option></select></label><button id="clear-filters" type="button">Reset filters</button></div>
       <p id="filtered-count" class="muted" role="status"></p>
-      <div class="resource-table-wrap"><table class="resource-table"><thead><tr><th>Durum</th><th><span class="column-dot source-dot"></span> SOURCE <small id="source-column-context"></small></th><th><span class="column-dot target-dot"></span> TARGET <small id="target-column-context"></small></th></tr></thead><tbody id="rows"></tbody></table></div>
-      <section id="versus" hidden aria-label="Seçili kaynak karşılaştırması">
-        <div class="title"><div><span class="eyebrow">SEÇİLİ KAYNAK</span><h3 id="versus-title"></h3></div><button id="close-versus" type="button">Kapat ×</button></div>
-        <div class="versus-grid"><div><h3>Source · beklenen hedef manifesti</h3><pre id="source-preview"></pre></div><div><h3>Target · mevcut manifest</h3><pre id="target-preview"></pre></div></div>
-        <details><summary>Değişen alan yolları</summary><p id="diff-paths" class="muted"></p></details>
-        <div class="resource-action"><span id="action-explanation" class="muted"></span><button id="sync" type="button" class="primary">Pasif hazırla</button></div>
-        <p id="sync-status" role="status"></p>
+      <div class="resource-table-wrap"><table class="resource-table"><thead><tr><th>Status</th><th><span class="column-dot source-dot"></span> SOURCE <small id="source-column-context"></small></th><th><span class="column-dot target-dot"></span> TARGET <small id="target-column-context"></small></th></tr></thead><tbody id="rows"></tbody></table></div>
+      <section id="versus" hidden aria-label="Selected resource comparison">
+        <div class="title"><div><span class="eyebrow">SELECTED RESOURCE</span><h3 id="versus-title"></h3></div><button id="close-versus" type="button">Close ×</button></div>
+        <div class="versus-grid"><div><h3>Source · expected target manifest</h3><pre id="source-preview"></pre></div><div><h3>Target · current manifest</h3><pre id="target-preview"></pre></div></div>
+        <details><summary>Changed field paths</summary><p id="diff-paths" class="muted"></p></details>
+        <div class="resource-action"><span id="action-explanation" class="muted"></span><button id="sync" type="button" class="primary">Prepare target</button></div>
+        <p id="sync-status" role="status"></p><button id="preview-guarded" type="button" hidden>Preview guarded merge update</button>
       </section>
       <details class="technical"><summary id="skip-count"></summary><ul id="skipped"></ul></details>
-      <details class="technical"><summary>Kapsam ve analiz sınırlamaları</summary><p id="report-notice" class="muted"></p></details>
+      <details class="technical"><summary>Scope and analysis limitations</summary><p id="report-notice" class="muted"></p></details>
     </div>
   </section>
   <section class="card" id="operations">
-    <div class="section-heading"><div><span class="eyebrow">03 / HAZIRLA VE AKTİFLEŞTİR</span><h2>Kontrollü geçiş.</h2></div><button id="load-history" type="button">Geçmişi yenile</button></div>
-    <div class="execution-mode"><label>İşlem modu<select id="sync-mode"><option value="prepare">Pasif hazırla</option><option value="activate">Aktifleştir</option></select></label><p id="mode-explanation" class="muted">Deployment/StatefulSet sıfır replica, CronJob suspend edilir. Mevcut hedef workload durabilir.</p></div>
-    <p class="muted">Karşılaştırma listesindeki kaynak aksiyonları bu modu kullanır. Kaynak cluster otomatik durdurulmaz; trafik ve veri geçişi ayrıca yönetilir.</p>
-    <div id="outcome-summary" class="outcome-summary" aria-label="İşlem sonuç özeti"></div>
-    <p id="history-status" class="muted" role="status">İşlemleri ve readiness durumlarını görmek için geçmişi yenile.</p>
-    <details id="history-details"><summary>İşlem geçmişi ve geri alma</summary><div class="table-wrap"><table><thead><tr><th>Zaman / mod</th><th>Hedef kaynak</th><th>Durum</th><th>Aksiyonlar</th></tr></thead><tbody id="history-rows"></tbody></table></div></details>
-    <p class="footnote">Applied: API kabulü. Ready: controller readiness; uygulama işlev testi değildir. Secret rollback yedeği saklanmaz.</p>
+    <div class="section-heading"><div><span class="eyebrow">03 / PREPARE AND ACTIVATE</span><h2>A controlled cutover.</h2></div><button id="load-history" type="button">Refresh history</button></div>
+    <div class="execution-mode"><label>Action mode<select id="sync-mode"><option value="prepare">Prepare target</option><option value="activate">Activate</option></select></label><p id="mode-explanation" class="muted">Deployment/StatefulSet replicas become zero and CronJobs are suspended. Existing target workloads may stop.</p></div>
+    <label class="strategy-field">Existing target update method<select id="update-strategy"><option value="apply">Server-side apply · respect field ownership</option><option value="merge">Guarded merge update · overwrite submitted fields</option></select></label><p class="muted">Guarded merge preserves omitted target fields but replaces submitted lists. It requires a fresh preview and confirmation. Reconcile HPA / GitOps ownership before cutover.</p><p class="muted">Resource actions use this mode. The source is not stopped automatically; traffic and data cutover must be managed separately.</p>
+    <div id="outcome-summary" class="outcome-summary" aria-label="Operation outcome summary"></div>
+    <p id="history-status" class="muted" role="status">Refresh history to see operations and readiness checks.</p>
+    <details id="history-details"><summary>Operation history and rollback</summary><div class="table-wrap"><table><thead><tr><th>Time / mode</th><th>Target resource</th><th>Status</th><th>Actions</th></tr></thead><tbody id="history-rows"></tbody></table></div></details>
+    <p class="footnote">Applied means API acceptance. Ready means controller readiness, not application health. Secret rollback backups are not stored.</p>
   </section>
 </main>
-<dialog id="sync-dialog" aria-labelledby="confirm-title"><div class="dialog-header"><span class="eyebrow">SON KONTROL</span><h2 id="confirm-title">Hedef değişikliğini onayla</h2></div><p id="sync-description" class="confirm-destination"></p><p id="confirm-impact" class="warning"></p><details><summary>Uygulanacak manifest · Secret değerleri maskeli</summary><pre id="sync-manifest"></pre></details><p id="sync-warnings" class="muted"></p><div class="dialog-actions"><button id="sync-cancel" type="button">Vazgeç</button><button id="sync-confirm" type="button" class="primary">Onayla</button></div></dialog>
+<dialog id="sync-dialog" aria-labelledby="confirm-title"><div class="dialog-header"><span class="eyebrow">FINAL REVIEW</span><h2 id="confirm-title">Confirm target change</h2></div><p id="sync-description" class="confirm-destination"></p><p id="confirm-impact" class="warning"></p><details><summary>Manifest to apply · Secret values are redacted</summary><pre id="sync-manifest"></pre></details><p id="sync-warnings" class="muted"></p><div class="dialog-actions"><button id="sync-cancel" type="button">Cancel</button><button id="sync-confirm" type="button" class="primary">Confirm</button></div></dialog>
 <script src="/app.js"></script>
 </body>
 </html>
