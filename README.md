@@ -144,3 +144,20 @@ are shown separately. A disconnected browser does not cancel an active job.
 Up to four analyses run concurrently; completed jobs remain in memory for up to
 ten minutes and are removed on later submissions. Restarting loses jobs.
 No raw kubectl output, credentials or resource manifests enter the activity log.
+
+## Faster reads and result filters
+
+Each namespace's supported resource kinds are now requested in one kubectl
+process, reducing repeated process startup, discovery and auth-plugin overhead.
+For 16 supported kinds, resource-reading processes drop from 16 to 1 per
+namespace per cluster. Kubernetes still performs a list request for each kind;
+actual improvement depends on network and authentication latency. Failed batch
+reads abort analysis, so incomplete data is not reported as successful.
+The per-API request timeout remains 15 seconds. The overall subprocess budget
+is 25 seconds multiplied by the number of kinds in a batch (25 seconds for
+single-kind reads), accommodating the sequential API lists in that process.
+
+Results can be filtered by namespace, resource kind and status together.
+Filters operate locally on the completed report without querying clusters.
+The visible count reflects the filters; summary cards and downloaded reports
+continue to include the full analysis. Clear filters restores all rows.

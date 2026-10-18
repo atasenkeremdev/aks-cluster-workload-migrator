@@ -39,9 +39,14 @@ def run(args, payload=None):
     ns = args[args.index('--namespace')+1] if '--namespace' in args else None
     label = context + (' / ' + ns if ns else '') + ' · ' + label
     progress('Waiting: ' + label, 'waiting')
+    timeout = 25
+    if 'get' in args:
+        resource_index = args.index('get') + 1
+        if resource_index < len(args):
+            timeout = 25 * len(args[resource_index].split(','))
     try:
         result = subprocess.run([executable, '--request-timeout=15s', *args],
-                                capture_output=True, text=True, timeout=25,
+                                capture_output=True, text=True, timeout=timeout,
                                 **({'input': json.dumps(payload)} if payload is not None else {'stdin': subprocess.DEVNULL}))
     except subprocess.TimeoutExpired:
         raise ClusterError('Cluster request timed out. Check connectivity and authentication.') from None
@@ -127,8 +132,10 @@ def snapshot(context, selected):
             progress(context + ' / ' + ns + ' · namespace absent; skipping')
             continue
         resources.append(available[ns])
-        for kind in kinds:
-            result = read_json([*args, '--namespace', ns, 'get', kind, '-o', 'json'])
+        if kinds:
+            # One process per namespace avoids repeated kubectl startup, discovery
+            # and exec-auth plugin startup for every kind. API lists remain scoped.
+            result = read_json([*args, '--namespace', ns, 'get', ','.join(kinds), '-o', 'json'])
             if not isinstance(result.get('items'), list):
                 raise ClusterError('kubectl returned an invalid resource list.')
             resources.extend(result['items'])

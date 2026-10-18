@@ -22,8 +22,7 @@ $('planner').onsubmit = async event => {
     $('report-notice').textContent=data.notice+(data.unavailable_kinds?' Unavailable API kinds: source: '+data.unavailable_kinds.source.join(', ')+ '; target: '+data.unavailable_kinds.target.join(', '):'');
     $('summary').replaceChildren(); $('rows').replaceChildren(); $('skipped').replaceChildren(); $('versus').hidden=true;
     for(const [status,count] of Object.entries(data.summary)){const box=document.createElement('div');box.className='metric';const n=document.createElement('strong');n.textContent=count;box.append(n,document.createTextNode(status.replaceAll('_',' ')));$('summary').append(box);}
-    for(const row of data.resources){const tr=document.createElement('tr');for(const key of ['status','kind','namespace','name']){const td=document.createElement('td'); if(key==='name'){const button=document.createElement('button');button.type='button';button.textContent=row.name;button.onclick=()=>showVersus(row);td.append(button);if(live && row.manifest && row.kind!=='Namespace'){const sync=document.createElement('button');sync.textContent='Sync to target';sync.onclick=()=>{showVersus(row);prepareSync();};td.append(sync);}}else td.textContent=row[key];tr.append(td);} $('rows').append(tr);}
-    if(!data.resources.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=4;td.textContent='No resources in the selected migration scope.';tr.append(td);$('rows').append(tr);}
+    populateFilters(); renderResources();
     $('skip-count').textContent=`${data.skipped.length} excluded resources`;
     for(const entry of data.skipped){const li=document.createElement('li');li.textContent=`${entry.side}: ${entry.kind}/${entry.name} — ${entry.reason}`;$('skipped').append(li);}
     $('results').hidden=false;
@@ -61,7 +60,7 @@ async function analyzeWithProgress(payload){
   const paint=()=>{if(!lastStatus)return;const extra=lastStatus.state==='running'?(Date.now()-receivedAt)/1000:0;const elapsed=lastStatus.elapsed_seconds+extra,step=lastStatus.step_seconds+extra;
     $('progress-current').textContent=lastStatus.current;
     $('progress-stats').textContent=`Elapsed: ${Math.floor(elapsed)}s · Current step: ${Math.floor(step)}s · Completed kubectl requests: ${lastStatus.completed_commands}`;
-    $('progress-wait').textContent=lastStatus.state==='running'&&lastStatus.phase==='waiting'?'Waiting for kubectl/API or authentication response. API request timeout: 15s; subprocess timeout: 25s.':lastStatus.phase==='comparing'?'Cluster reads finished; comparing manifests.':'';
+    $('progress-wait').textContent=lastStatus.state==='running'&&lastStatus.phase==='waiting'?'Waiting for kubectl/API or authentication response. Each API request timeout: 15s. Resource kinds are read in a namespace batch; the whole batch has a timeout of 25s per kind.':lastStatus.phase==='comparing'?'Cluster reads finished; comparing manifests.':'';
     if(lastStatus.state==='running'&&extra>5)$('progress-wait').textContent+=' Progress updates delayed; checking the local application connection.';
   };
   const timer=setInterval(paint,500);
@@ -75,3 +74,21 @@ async function analyzeWithProgress(payload){
     }
   }catch(error){$('progress-title').textContent=lastStatus?.state==='failed'?'Analysis failed':'Application connection interrupted';$('progress-wait').textContent=lastStatus?.state==='failed'?'Analysis stopped at the step shown above.':'The server analysis may still be running; check the local application connection.';throw error;}finally{clearInterval(timer);}
 }
+
+function populateFilters(){
+  for(const [id,key,label] of [['filter-namespace','namespace','All namespaces'],['filter-kind','kind','All kinds'],['filter-status','status','All statuses']]){
+    $(id).replaceChildren(new Option(label,''));for(const value of [...new Set(report.resources.map(row=>row[key]))].sort())$(id).append(new Option(value||'(cluster scope)',value));
+  }
+}
+function filteredResources(){return report.resources.filter(row=>[['filter-namespace','namespace'],['filter-kind','kind'],['filter-status','status']].every(([id,key])=>!$(id).value||row[key]===$(id).value));}
+function renderResources(){
+  if(!report)return;
+  const rows=filteredResources();$('rows').replaceChildren();$('versus').hidden=true;
+  $('filtered-count').textContent=`Showing ${rows.length} of ${report.resources.length} resources · summary counts cover all results`;
+  const fragment=document.createDocumentFragment();
+  for(const row of rows){const tr=document.createElement('tr');for(const key of ['status','kind','namespace','name']){const td=document.createElement('td');if(key==='name'){const button=document.createElement('button');button.type='button';button.textContent=row.name;button.onclick=()=>showVersus(row);td.append(button);if(analyzedPayload&&row.manifest&&row.kind!=='Namespace'){const sync=document.createElement('button');sync.textContent='Sync to target';sync.onclick=()=>{showVersus(row);prepareSync();};td.append(sync);}}else td.textContent=row[key];tr.append(td);}fragment.append(tr);}
+  if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=4;td.textContent='No resources match these filters.';tr.append(td);fragment.append(tr);}
+  $('rows').append(fragment);
+}
+for(const id of ['filter-namespace','filter-kind','filter-status'])$(id).onchange=renderResources;
+$('clear-filters').onclick=()=>{for(const id of ['filter-namespace','filter-kind','filter-status'])$(id).value='';renderResources();};
