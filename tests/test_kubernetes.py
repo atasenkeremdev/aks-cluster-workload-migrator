@@ -76,3 +76,28 @@ class DiagnosticTests(unittest.TestCase):
         with self.assertRaises(k.ClusterError) as error:
             k.live_analyze({'source_context':'src', 'target_context':'dst', 'namespaces':['demo']})
         self.assertEqual(str(error.exception), 'Target cluster: Forbidden')
+
+class NamespaceDiagnosticsTests(unittest.TestCase):
+    @patch('migrator.kubernetes.shutil.which', return_value='/bin/kubectl')
+    @patch('migrator.kubernetes.subprocess.run')
+    def test_connectivity_errors_are_actionable_and_redacted(self, run, _):
+        cases = [('dial tcp: lookup API: no such host', 'DNS'),
+                 ('Unable to connect to the server: connection refused', 'unreachable'),
+                 ('x509: certificate signed by unknown authority', 'TLS')]
+        for stderr, expected in cases:
+            with self.subTest(stderr=stderr):
+                run.return_value = subprocess.CompletedProcess([], 1, '', stderr + ' private-token-value')
+                with self.assertRaises(k.ClusterError) as caught:
+                    k.run(['--context', 'source-cluster', 'get', 'namespaces', '-o', 'json'])
+                self.assertIn(expected, str(caught.exception))
+                self.assertNotIn('private-token-value', str(caught.exception))
+
+    @patch('migrator.kubernetes.context_args', return_value=['--context', 'source-cluster'])
+    @patch('migrator.kubernetes.read_json', side_effect=k.ClusterError('Kubernetes denied access (RBAC Forbidden).', 502, 'permission'))
+    def test_namespace_error_preserves_cause_and_adds_local_diagnostic(self, _, __):
+        with self.assertRaises(k.ClusterError) as caught:
+            k.namespaces('source-cluster')
+        self.assertEqual(caught.exception.status, 502)
+        self.assertEqual(caught.exception.category, 'permission')
+        self.assertIn('RBAC Forbidden', str(caught.exception))
+        self.assertIn('same terminal', str(caught.exception))

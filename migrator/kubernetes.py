@@ -81,6 +81,12 @@ def run(args, payload=None):
             message = 'Kubernetes denied access (RBAC Forbidden).'
         elif 'unauthorized' in error or 'logged in' in error:
             message = 'Kubernetes authentication failed. Refresh server-side credentials.'
+        elif any(text in error for text in ('no such host', 'name resolution', 'getaddrinfo')):
+            message = 'Kubernetes API DNS lookup failed. Check VPN connectivity and private DNS on the application host.'
+        elif any(text in error for text in ('connection refused', 'unable to connect to the server', 'network is unreachable', 'no route to host')):
+            message = 'Kubernetes API is unreachable. Check the application host VPN, network access and kubeconfig server address.'
+        elif 'x509' in error or 'tls handshake' in error:
+            message = 'Kubernetes TLS verification or handshake failed. Check the trusted kubeconfig certificate authority, API endpoint and local clock.'
         elif 'executable' in error or 'exec plugin' in error:
             message = 'Kubeconfig authentication plugin is missing or failed.'
         elif 'conflict' in error or 'object has been modified' in error:
@@ -125,7 +131,13 @@ def read_json(args):
 
 def namespaces(context):
     args = context_args(context)
-    result = read_json([*args, 'get', 'namespaces', '-o', 'json'])
+    try:
+        result = read_json([*args, 'get', 'namespaces', '-o', 'json'])
+    except ClusterError as error:
+        raise ClusterError('Source namespace loading failed: ' + str(error) +
+                           ' Verify namespace-list access with kubectl in the same terminal used to start this application. '
+                           'For Azure authentication, refresh your Azure CLI login and ensure kubelogin is installed when required by your kubeconfig.',
+                           error.status, error.category) from None
     return {'namespaces': sorted(obj['metadata']['name'] for obj in result['items']
                                  if obj['metadata']['name'] not in PROTECTED)}
 
