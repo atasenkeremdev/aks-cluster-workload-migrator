@@ -28,6 +28,7 @@
     <button id="step-execute" type="button" class="step"><span>3</span><div><strong>Review outcomes</strong><small>Readiness and operation history</small></div></button>
   </nav>
   <form id="planner">
+    <details id="namespace-exclusions" class="warning" hidden><summary id="namespace-exclusions-summary">Excluded namespaces</summary><p>Unchecked namespaces are excluded from comparison and migration actions. Select them in the namespace picker to include them again. System policy exclusions cannot be selected.</p><ul id="namespace-exclusions-list"></ul></details>
     <details id="scope" class="card scope-card" open>
       <summary class="section-summary"><span><span class="section-number">01</span> Migration scope</span><span class="muted">Edit / collapse</span></summary>
       <div class="scope-content">
@@ -37,7 +38,7 @@
           <label>Source context<select id="src" required><option value="">Select source context</option></select></label>
           <label>Target context<select id="dst" required><option value="">Select target context</option></select></label>
         </div>
-        <div class="namespace-scope"><div class="namespace-field"><span id="namespace-label">Namespaces</span>
+        <div class="namespace-scope"><div class="namespace-field"><span id="namespace-label">Included namespaces</span>
           <details id="namespace-dropdown"><summary id="namespace-summary" aria-labelledby="namespace-label namespace-summary-text"><span id="namespace-summary-text">Select namespaces</span></summary>
             <div class="namespace-menu"><input id="namespace-search" type="search" aria-label="Search namespaces" placeholder="Search namespaces…"><div class="namespace-tools"><label><input id="namespace-all" type="checkbox"> Select all</label><button id="namespace-clear" type="button">Clear selection</button></div><div id="namespace-list" role="group" aria-label="Available namespaces"></div><p id="namespace-empty" class="muted">Load source namespaces first.</p></div>
           </details><small id="namespace-count" role="status">0 selected · maximum 200</small>

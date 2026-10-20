@@ -89,6 +89,48 @@ class WorkspaceBrowserTests(unittest.TestCase):
         page.set_viewport_size({'width':390, 'height':844})
         self.assertTrue(page.evaluate('document.documentElement.scrollWidth<=window.innerWidth'))
 
+    def test_namespace_exclusions_are_visible_and_limit_analysis(self):
+        page = self.page
+        page.locator('#advanced>summary').click()
+        page.select_option('#mode', 'offline')
+        page.click('#demo')
+        objects = [{'apiVersion': 'v1', 'kind': 'ConfigMap',
+                    'metadata': {'name': 'settings', 'namespace': name},
+                    'data': {'key': 'value'}}
+                   for name in ['alpha', 'beta', 'kube-system']]
+        page.fill('#source', json.dumps(objects))
+        page.fill('#target', '[]')
+        page.click('#namespace-from-json')
+        page.click('#namespace-summary')
+        page.check('#namespace-all')
+        page.uncheck('#namespace-list input[value="beta"]')
+        page.click('#namespace-summary')
+        self.assertIn('1 namespaces included · 2 excluded', page.locator('#overview-namespaces').inner_text())
+        page.locator('#namespace-exclusions-summary').click()
+        text = page.locator('#namespace-exclusions-list').inner_text()
+        self.assertIn('beta — User selection', text)
+        self.assertIn('kube-system — System policy', text)
+        self.assertEqual(page.locator('#namespace-list input[value="kube-system"]').count(), 0)
+        page.click('#submit')
+        page.wait_for_selector('#results', state='visible')
+        self.assertEqual(page.locator('#rows tr').count(), 1)
+        self.assertIn('alpha', page.locator('#rows').inner_text())
+        self.assertTrue(page.locator('#namespace-exclusions').is_visible())
+        with page.expect_download() as download_info:
+            page.click('#download')
+        downloaded = json.loads(Path(download_info.value.path()).read_text())
+        self.assertEqual(downloaded['namespace_scope']['included'], ['alpha'])
+        self.assertEqual(downloaded['namespace_scope']['excluded'], [
+            {'name': 'beta', 'reason': 'User selection'},
+            {'name': 'kube-system', 'reason': 'System policy'}])
+        page.click('#step-scope')
+        page.click('#namespace-summary')
+        page.check('#namespace-list input[value="beta"]')
+        self.assertTrue(page.locator('#scope-stale').is_visible())
+        self.assertNotIn('beta', page.locator('#namespace-exclusions-list').inner_text())
+        page.select_option('#mode', 'live')
+        self.assertTrue(page.locator('#namespace-exclusions').is_hidden())
+
     def test_namespace_select_all_and_live_waiting_progress(self):
         page = self.page
         complete = threading.Event()

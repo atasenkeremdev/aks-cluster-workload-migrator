@@ -78,6 +78,16 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(str(error.exception), 'Target cluster: Forbidden')
 
 class NamespaceDiagnosticsTests(unittest.TestCase):
+    @patch('migrator.kubernetes.context_args', return_value=['--context', 'source'])
+    @patch('migrator.kubernetes.read_json')
+    def test_protected_namespaces_are_reported_but_not_selectable(self, read, _):
+        read.return_value = {'items': [{'metadata': {'name': name}}
+                                      for name in ['beta', 'kube-system', 'alpha', 'elastic-agent']]}
+        self.assertEqual(k.namespaces('source'), {
+            'namespaces': ['alpha', 'beta'],
+            'protected_namespaces': ['elastic-agent', 'kube-system']})
+
+
     @patch('migrator.kubernetes.shutil.which', return_value='/bin/kubectl')
     @patch('migrator.kubernetes.subprocess.run')
     def test_connectivity_errors_are_actionable_and_redacted(self, run, _):

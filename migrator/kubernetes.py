@@ -139,7 +139,9 @@ def namespaces(context):
                            'For Azure authentication, refresh your Azure CLI login and ensure kubelogin is installed when required by your kubeconfig.',
                            error.status, error.category) from None
     return {'namespaces': sorted(obj['metadata']['name'] for obj in result['items']
-                                 if obj['metadata']['name'] not in PROTECTED)}
+                                 if obj['metadata']['name'] not in PROTECTED),
+            'protected_namespaces': sorted(obj['metadata']['name'] for obj in result['items']
+                                           if obj['metadata']['name'] in PROTECTED)}
 
 
 def validate_selection(source, target, selected):

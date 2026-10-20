@@ -85,6 +85,15 @@ target, namespace count, action mode, connection and current activity visible.
 2. Click **Load source namespaces** and choose namespaces in the searchable
    multi-select. Select all includes entries hidden by search. Changing source
    clears the old list.
+   Uncheck namespaces to exclude them from comparison and migration actions. The
+   overview shows included/excluded counts, and **Excluded namespaces** remains
+   visible when the scope panel is collapsed. Expand it to see names and reasons:
+   **User selection** for unchecked namespaces, **System policy** for protected
+   namespaces returned by the cluster or found in offline JSON. Select an unchecked
+   namespace again to include it; protected namespaces cannot be selected. Search
+   only filters the picker display and does not change the scope. Changing the
+   selection invalidates the previous comparison; run comparison again before
+   applying changes. Downloaded reports include the analyzed namespace scope.
 3. Open **Advanced settings** only when registry rewriting or offline JSON is
    needed. Enter full old/new registry hostnames to rewrite container images.
 4. Start comparison. The scope folds after success. Progress and elapsed times

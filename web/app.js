@@ -25,7 +25,7 @@ $('planner').onsubmit = async event => {
     const submittedScope=scopeFingerprint();
     const data=live?await analyzeWithProgress(payload):await clusterRequest('/api/analyze',payload);
     analyzedPayload=live?structuredClone(payload):null;
-    report={...data,source_context:payload.source_context,target_context:payload.target_context};reportScope=submittedScope;
+    report={...data,namespace_scope:{included:[...payload.namespaces],excluded:namespaceExclusions()},source_context:payload.source_context,target_context:payload.target_context};reportScope=submittedScope;
     $('source-column-context').textContent=payload.source_context;$('target-column-context').textContent=payload.target_context;
     $('report-notice').textContent=data.notice+(data.unavailable_kinds?' Unavailable API kinds: source: '+data.unavailable_kinds.source.join(', ')+ '; target: '+data.unavailable_kinds.target.join(', '):'');
     $('summary').replaceChildren(); $('rows').replaceChildren(); $('skipped').replaceChildren(); $('versus').hidden=true;
@@ -46,7 +46,7 @@ for(const id of ['src','dst']){const previous=$(id).value;$(id).replaceChildren(
 if($('src').value!==previousSource)setNamespaces([]);updateOverview();
 $('connection').textContent=loadedContexts.length+' contexts loaded. Select the exact source and target names.';
 }catch(error){$('connection').textContent=error.message;connectionState='Unable to load contexts';}finally{$('connect').disabled=false;updateOverview();}};
-$('load-namespaces').onclick=async()=>{const context=$('src').value.trim();$('load-namespaces').disabled=true;$('connection').textContent='Loading source namespaces: checking cluster connectivity and authentication…';try{const data=await clusterRequest('/api/namespaces',{context});if($('src').value!==context||$('mode').value!=='live')return;setNamespaces(data.namespaces);$('namespace-options').textContent=data.namespaces.length+' namespaces available.';$('connection').textContent='Source connection verified. Choose your namespace scope.';connectionState='Source reachable';updateOverview();}catch(error){$('connection').textContent=error.message;}finally{$('load-namespaces').disabled=false;}};
+$('load-namespaces').onclick=async()=>{const context=$('src').value.trim();$('load-namespaces').disabled=true;$('connection').textContent='Loading source namespaces: checking cluster connectivity and authentication…';try{const data=await clusterRequest('/api/namespaces',{context});if($('src').value!==context||$('mode').value!=='live')return;setNamespaces(data.namespaces,undefined,data.protected_namespaces||[]);$('namespace-options').textContent=data.namespaces.length+' namespaces available.';$('connection').textContent='Source connection verified. Choose your namespace scope.';connectionState='Source reachable';updateOverview();}catch(error){$('connection').textContent=error.message;}finally{$('load-namespaces').disabled=false;}};
 
 
 function flat(value,path='',out={}){if(value!==null && typeof value==='object'){const entries=Object.entries(value);if(!entries.length)out[path]=JSON.stringify(value);for(const [key,v] of entries)flat(v,path+'/'+key.replaceAll('~','~0').replaceAll('/','~1'),out);}else out[path]=JSON.stringify(value);return out;}
@@ -205,9 +205,11 @@ async function trackReadiness(id){for(let attempt=0;attempt<12;attempt++){try{co
 
 function canSync(row){return Boolean(analyzedPayload && !scopeStale && row.manifest && row.kind!=='Namespace' && ['DIFF','SOURCE_ONLY'].includes(row.status));}
 
-let availableNamespaces=[], selectedNamespaces=new Set();
-function setNamespaces(names,selection){
-  availableNamespaces=[...new Set(names)].sort();
+const protectedNamespaces=new Set(['elastic-agent','kube-system','kube-public','kube-node-lease']);
+let availableNamespaces=[], selectedNamespaces=new Set(), policyExcludedNamespaces=[];
+function setNamespaces(names,selection,policyNames=[]){
+  policyExcludedNamespaces=[...new Set([...names,...policyNames].filter(name=>protectedNamespaces.has(name)))].sort();
+  availableNamespaces=[...new Set(names)].filter(name=>!protectedNamespaces.has(name)).sort();
   selectedNamespaces=new Set((selection??[...selectedNamespaces]).filter(name=>availableNamespaces.includes(name)));
   $('namespace-search').value='';renderNamespaces();
 }
@@ -225,13 +227,13 @@ function updateNamespaceCount(){
   $('namespace-count').textContent=`${availableNamespaces.length} namespaces, ${count} selected · maximum 200`;
   $('namespace-all').checked=availableNamespaces.length>0&&count===availableNamespaces.length;
   $('namespace-all').indeterminate=count>0&&count<availableNamespaces.length;
-  $('namespace-all').disabled=!availableNamespaces.length;updateOverview();
+  $('namespace-all').disabled=!availableNamespaces.length;renderNamespaceExclusions();updateOverview();
 }
 $('namespace-search').oninput=renderNamespaces;
 $('namespace-all').onchange=()=>{selectedNamespaces=new Set($('namespace-all').checked?availableNamespaces:[]);renderNamespaces();};
 $('namespace-clear').onclick=()=>{selectedNamespaces.clear();renderNamespaces();};
 function loadOfflineNamespaces(){
- try{const names=[];for(const id of ['source','target']){if(!$(id).value.trim())continue;const data=JSON.parse($(id).value);const objects=Array.isArray(data)?data:data.kind==='List'?data.items:[data];for(const obj of objects){const name=obj.metadata?.namespace||(obj.kind==='Namespace'?obj.metadata?.name:null);if(name&&!['elastic-agent','kube-system','kube-public','kube-node-lease'].includes(name))names.push(name);}}setNamespaces(names);$('error').textContent='';}catch(error){$('error').textContent='Provide valid source and target JSON before loading namespaces.';}
+ try{const names=[];for(const id of ['source','target']){if(!$(id).value.trim())continue;const data=JSON.parse($(id).value);const objects=Array.isArray(data)?data:data.kind==='List'?data.items:[data];for(const obj of objects){const name=obj.metadata?.namespace||(obj.kind==='Namespace'?obj.metadata?.name:null);if(name)names.push(name);}}setNamespaces(names);$('error').textContent='';}catch(error){$('error').textContent='Provide valid source and target JSON before loading namespaces.';}
 }
 $('namespace-from-json').onclick=loadOfflineNamespaces;
 for(const id of ['source','target'])$(id).addEventListener('change',()=>{if($('mode').value==='offline')loadOfflineNamespaces();});
@@ -240,9 +242,20 @@ document.addEventListener('click',event=>{if(!$('namespace-dropdown').contains(e
 $('namespace-dropdown').addEventListener('keydown',event=>{if(event.key==='Escape'){$('namespace-dropdown').open=false;$('namespace-summary').focus();}});
 renderNamespaces();
 
+function namespaceExclusions(){
+  return [...availableNamespaces.filter(name=>!selectedNamespaces.has(name)).map(name=>({name,reason:'User selection'})),...policyExcludedNamespaces.map(name=>({name,reason:'System policy'}))].sort((a,b)=>a.name.localeCompare(b.name));
+}
+function renderNamespaceExclusions(){
+  const excluded=namespaceExclusions();
+  $('namespace-exclusions').hidden=!excluded.length;
+  $('namespace-exclusions-summary').textContent=`Excluded namespaces (${excluded.length})`;
+  $('namespace-exclusions-list').replaceChildren();
+  for(const item of excluded){const li=document.createElement('li');li.textContent=item.name+' — '+item.reason;$('namespace-exclusions-list').append(li);}
+}
+
 function scopeFingerprint(){return JSON.stringify([$('mode').value,$('src').value,$('dst').value,[...selectedNamespaces].sort(),$('old').value.trim(),$('new').value.trim(),$('mode').value==='offline'?[$('source').value,$('target').value]:null]);}
 function updateOverview(){
-  $('overview-source').textContent=$('src').value||'Select a source';$('overview-target').textContent=$('dst').value||'Select a target';$('overview-namespaces').textContent=selectedNamespaces.size+' namespace';$('overview-connection').textContent=connectionState;$('overview-connection').classList.toggle('connected',connectionState==='Both clusters read'||connectionState==='Source reachable');
+  $('overview-source').textContent=$('src').value||'Select a source';$('overview-target').textContent=$('dst').value||'Select a target';$('overview-namespaces').textContent=selectedNamespaces.size+' namespaces included · '+namespaceExclusions().length+' excluded';$('overview-connection').textContent=connectionState;$('overview-connection').classList.toggle('connected',connectionState==='Both clusters read'||connectionState==='Source reachable');
   const stale=Boolean(report&&reportScope&&(resultNeedsRefresh||scopeFingerprint()!==reportScope));if(stale!==scopeStale){scopeStale=stale;$('scope-stale').hidden=!stale;renderResources();if(selectedRow){$('selected-actions').replaceChildren();if(canSync(selectedRow))$('selected-actions').append(actionButtons(selectedRow));}}
 }
 function updateActionLabels(){for(const button of document.querySelectorAll('[data-sync]'))button.disabled=writeInFlight;}
