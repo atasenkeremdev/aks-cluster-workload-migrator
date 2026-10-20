@@ -28,6 +28,51 @@ Kubeconfig exec plugins run locally; use trusted kubeconfig files only.
 
 On Linux, use `python3` in place of `py -3`. No package installation is needed.
 
+### Troubleshooting namespace loading (HTTP 502)
+
+**Load cluster contexts** reads the local kubeconfig; success does not confirm
+cluster connectivity. **Load source namespaces** contacts the selected cluster's
+API and requires permission to list namespaces. A 502 can indicate a failed
+kubectl request; read the accompanying UI message for the cause.
+
+In the same PowerShell window used to start the application, run:
+
+```powershell
+kubectl config get-contexts -o name
+kubectl --context "YOUR_SOURCE_CONTEXT" get namespaces --request-timeout=15s
+```
+
+Replace `YOUR_SOURCE_CONTEXT` with the exact source context selected in the UI.
+This lists namespaces in the selected cluster; it does not change the current
+context or cluster resources.
+
+If kubectl fails, check the reported cause: corporate VPN/private DNS and API
+network access, trusted kubeconfig/TLS settings, authentication, or RBAC permission
+to list namespaces. For Azure authentication errors, refresh your Azure CLI login
+using your organization's procedure and verify that kubelogin is installed if
+your kubeconfig requires it.
+
+If kubectl succeeds but the UI still fails, stop the existing application with
+**Ctrl+C** and restart it from that same working PowerShell window:
+
+```powershell
+Get-Command kubectl | Select-Object Source
+$env:KUBECONFIG
+py -3 -m migrator.server --port 8081
+```
+
+An empty `KUBECONFIG` value is normal: kubectl uses the default
+`$HOME\.kube\config`. The application inherits its environment at startup, so
+restart it after changing PATH, KUBECONFIG, or other environment settings.
+Restarting from the working terminal resolved a reported case; the exact original
+cause was not confirmed.
+
+Open `http://127.0.0.1:8081`, press **Ctrl+F5**, reload cluster contexts, select
+the exact context that worked in kubectl, and retry **Load source namespaces**.
+If it still fails, compare the UI error with kubectl's error and note whether
+the failure is consistent or intermittent. When reporting errors, remove tokens,
+credentials and sensitive addresses; do not share kubeconfig contents.
+
 ## Compare
 
 The workspace follows three stages: **Select scope → Compare → Prepare /
