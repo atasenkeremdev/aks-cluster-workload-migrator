@@ -216,9 +216,10 @@ compatible with the cluster that supports `patch --subresource=scale`.
 
 **This stops source pods and may interrupt traffic or processing.** Verify target
 readiness and coordinate traffic and consumer cutover before confirming. This is
-an explicit action per workload; there is no automatic shutdown after activation
-or bulk source shutdown. A five-minute, single-use preview, source UID/configuration
-checks and an atomic resourceVersion guard block stale writes. HPAs are checked
+an explicit action, either per workload or through the reviewed bulk source
+action below. Activation never triggers source shutdown automatically.
+A five-minute, single-use preview, source UID/configuration checks and an atomic
+resourceVersion guard block stale writes. HPAs are checked
 again at execution, but another controller or a newly created autoscaler can still
 reactivate the source; coordinate GitOps and autoscaling separately.
 
@@ -254,6 +255,30 @@ readiness; use operation history to check health. After any execution attempt,
 run analysis again before applying further changes. Closing the browser during
 execution can interrupt the remaining client-driven batch; inspect history and
 re-analyze rather than assuming everything was applied.
+
+### Bulk source scale to zero
+
+Individual **Scale source to zero** buttons remain available. To stop several
+source workloads in one review, choose **Scale all source to zero (N)** in the
+separate **Source actions · filtered results** area above the comparison table.
+The button appears when at least two eligible Deployments or StatefulSets are
+visible. Search, namespace, kind, status and **Differences only** filters define
+the batch; turn off **Differences only** to include matching workloads. Excluded,
+target-only, already-zero, unsupported, offline and stale resources are omitted.
+Narrow filters if more than 100 workloads qualify.
+
+The review identifies the source cluster and all namespaces, lists every workload,
+and shows each validated replica count changing to zero. All previews must pass
+the same server-side policy, HPA and dry-run checks as individual scaling before
+confirmation is enabled. Cancelling, expiry or a validation failure performs no
+writes and discards collected previews. No target resource is written.
+
+On confirmation, scaling runs sequentially and stops at the first failure.
+**The batch is not atomic:** earlier successful scale requests remain applied;
+later items are marked **Not processed**. Each attempted write uses the individual
+source identity/configuration guards and durable operation history. Inspect the
+source and history after a failure or browser interruption. API acceptance does
+not prove shutdown; use **Check readiness** in history and run comparison again.
 
 ### Resolving activation conflicts
 

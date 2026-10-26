@@ -305,6 +305,108 @@ class WorkspaceBrowserTests(unittest.TestCase):
         self.assertEqual(page.locator('#bulk-review-rows').inner_text().count('Applied'),2)
         self.assertTrue(page.locator('#sync-confirm').is_disabled())
 
+    def test_bulk_source_scale_filters_validation_cancel_partial_failure_and_success(self):
+        page = self.page
+        def workload(name, kind='Deployment', replicas=3):
+            return {'apiVersion':'apps/v1','kind':kind,'metadata':{'name':name,'namespace':'demo'},
+                    'spec':{'replicas':replicas,'template':{'spec':{'containers':[{'name':'app','image':'example/app:1'}]}}}}
+        source = [workload('a'),workload('b'),workload('c','StatefulSet'),workload('matching'),workload('zero',replicas=0)]
+        target = copy.deepcopy(source)
+        for obj in target[:3]:
+            obj['spec']['replicas'] = 1
+        target.append(workload('target-only'))
+        source.append({'apiVersion':'batch/v1','kind':'CronJob','metadata':{'name':'schedule','namespace':'demo'},'spec':{'suspend':False}})
+        report = analyze(source,target,['demo'])
+        state = {'fail_preview':False,'fail_write':False,'writes':[], 'plans':[], 'discarded':[], 'target_writes':[]}
+        tokens = {}
+        page.route('**/api/contexts',lambda route:route.fulfill(json={'contexts':['source','target']}))
+        page.route('**/api/namespaces',lambda route:route.fulfill(json={'namespaces':['demo']}))
+        page.route('**/api/live/jobs',lambda route:route.fulfill(status=202,json={'job_id':'source-bulk'}))
+        page.route('**/api/jobs/source-bulk',lambda route:route.fulfill(json={'state':'completed','current':'Complete','phase':'completed_analysis','elapsed_seconds':1,'step_seconds':0,'completed_commands':1,'events':[],'result':report}))
+        page.route('**/api/history',lambda route:route.fulfill(json={'operations':[]}))
+        def plan(route):
+            body = route.request.post_data_json
+            state['plans'].append(body)
+            if state['fail_preview'] and body['name']=='b':
+                route.fulfill(status=400,json={'error':'A source HPA controls this workload.'});return
+            token = 'source-plan-'+str(len(state['plans']))
+            tokens[token] = body
+            route.fulfill(json={'token':token,'mode':'source-scale-zero','previous_replicas':3,
+                                'manifest':{'spec':{'replicas':0}},'expires_in':300,'warnings':[]})
+        def execute(route):
+            body = tokens[route.request.post_data_json['token']]
+            self.assertTrue(route.request.post_data_json['confirm'])
+            state['writes'].append(body)
+            if state['fail_write'] and body['name']=='b':
+                route.fulfill(status=409,json={'error':'Source changed after preview.','category':'resource_version'});return
+            route.fulfill(json={'status':'Applied','operation_id':body['name']})
+        def discard(route):
+            state['discarded'].extend(route.request.post_data_json['tokens'])
+            route.fulfill(json={'discarded':len(route.request.post_data_json['tokens'])})
+        def target_write(route):
+            state['target_writes'].append(route.request.post_data_json)
+            route.fulfill(status=400,json={'error':'Unexpected target write'})
+        page.route('**/api/source/scale/plan',plan);page.route('**/api/source/scale/execute',execute)
+        page.route('**/api/sync/discard',discard);page.route('**/api/sync/execute',target_write)
+        page.click('#connect');page.wait_for_function("document.querySelector('#dst').options.length===3")
+        page.select_option('#src','source');page.select_option('#dst','target');page.click('#load-namespaces')
+        page.wait_for_function("document.querySelector('#namespace-list input')!==null")
+        page.click('#namespace-summary');page.check('#namespace-all');page.click('#namespace-summary')
+        page.click('#submit');page.wait_for_selector('#results',state='visible')
+        button = page.locator('#bulk-source-scale-zero')
+        self.assertEqual(button.inner_text(),'Scale all source to zero (3)')
+        self.assertEqual(page.locator('#rows [data-action="source-scale-zero"]').count(),3)
+        page.uncheck('#differences-only')
+        self.assertEqual(button.inner_text(),'Scale all source to zero (4)')
+        page.fill('#resource-search','matching')
+        self.assertTrue(button.is_hidden())
+        self.assertEqual(page.locator('#rows [data-action="source-scale-zero"]').count(),1)
+        page.click('#clear-filters')
+        page.select_option('#filter-kind','StatefulSet');self.assertTrue(button.is_hidden())
+        page.select_option('#filter-kind','Deployment');self.assertEqual(button.inner_text(),'Scale all source to zero (2)')
+        page.click('#clear-filters')
+        # One blocked workload prevents every write, including previously validated items.
+        state['fail_preview'] = True
+        button.click();page.wait_for_selector('#review-conflict',state='visible')
+        self.assertIn('HPA',page.locator('#conflict-summary').inner_text())
+        self.assertTrue(page.locator('#sync-confirm').is_disabled())
+        self.assertEqual(state['writes'],[])
+        self.assertGreaterEqual(len(state['discarded']),1)
+        page.click('#sync-cancel');state['fail_preview'] = False
+        # Cancellation after successful previews still makes no writes.
+        button.click();page.wait_for_function("!document.querySelector('#sync-confirm').disabled")
+        self.assertEqual(page.locator('#review-role').inner_text(),'SOURCE CLUSTER CHANGE')
+        self.assertEqual(page.locator('#review-cluster').inner_text(),'source')
+        self.assertEqual(page.locator('#review-change').inner_text(),'3 source workloads → 0 replicas')
+        self.assertEqual(page.locator('#bulk-review-rows tr').count(),3)
+        self.assertEqual(page.locator('#bulk-review-rows').inner_text().count('3 → 0 replicas'),3)
+        self.assertTrue(page.locator('#strategy-control').is_hidden())
+        page.click('#sync-cancel');self.assertEqual(state['writes'],[])
+        # The second write fails: retain the first, do not process the third.
+        state['fail_write'] = True
+        button.click();page.wait_for_function("!document.querySelector('#sync-confirm').disabled")
+        page.click('#sync-confirm')
+        page.wait_for_function("document.querySelector('#review-status').textContent.includes('Stopped after 1 of 3')")
+        self.assertEqual([body['name'] for body in state['writes']],['a','b'])
+        self.assertIn('Not processed',page.locator('#bulk-review-rows').inner_text())
+        page.click('#sync-cancel');self.assertTrue(button.is_hidden())
+        # Re-analysis is required; the successful batch keeps the source endpoint.
+        state['fail_write'] = False;state['writes'].clear()
+        page.click('#step-scope');page.click('#submit');page.wait_for_selector('#results',state='visible')
+        button.click();page.wait_for_function("!document.querySelector('#sync-confirm').disabled")
+        page.click('#sync-confirm')
+        page.wait_for_function("document.querySelector('#review-status').textContent.includes('Applied 3 resources')")
+        self.assertEqual([body['name'] for body in state['writes']],['a','b','c'])
+        self.assertTrue(all(body['source_context']=='source' for body in state['writes']))
+        self.assertEqual(state['target_writes'],[])
+        self.assertTrue(page.locator('#sync-confirm').is_disabled())
+        page.click('#sync-cancel')
+        # The existing batch limit is retained for source shutdown.
+        report.clear();report.update(analyze([workload('worker-'+str(i)) for i in range(101)],[],['demo']))
+        page.click('#step-scope');page.click('#submit');page.wait_for_selector('#results',state='visible')
+        self.assertEqual(button.inner_text(),'Scale all source to zero (101)')
+        self.assertTrue(button.is_disabled())
+
     def test_source_scale_preview_cancel_confirm_and_stale_scope(self):
         page = self.page
         source = {'apiVersion':'apps/v1','kind':'Deployment',

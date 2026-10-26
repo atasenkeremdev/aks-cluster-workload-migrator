@@ -77,6 +77,7 @@ function setReviewSummary(role,context,namespace,resource,change){
  $('strategy-help').hidden=role==='source';
 }
 function reviewChange(review,plan){
+ if(review.bulk&&review.action==='source-scale-zero')return `${review.rows.length} source workloads → 0 replicas`;
  if(review.action==='source-scale-zero')return plan?`${plan.previous_replicas} → 0 replicas`:'Scale replicas to zero';
  if(review.bulk)return `${review.rows.length} resources · ${review.action==='sync'?'Sync configuration':'Activate workloads'}`;
  const row=review.row;
@@ -120,7 +121,7 @@ async function validateReview(){
    if(generation!==reviewGeneration||!$('sync-dialog').open)break;
    const row=rows[index];if(review.bulk){setBulkState(index,'Validating…');$('review-status').textContent=`Validating ${index+1} of ${rows.length}: ${row.kind}/${row.name}`;}
    const plan=await clusterRequest(review.action==='source-scale-zero'?'/api/source/scale/plan':'/api/sync/plan',{...review.base,namespace:row.namespace,name:row.name,kind:row.kind,apiVersion:row.apiVersion,mode:review.action,strategy:$('update-strategy').value});
-   plan.expiresAt=Date.now()+(plan.expires_in||300)*1000;plans.push({row,plan});if(generation!==reviewGeneration||!$('sync-dialog').open)break;if(review.bulk)setBulkState(index,'Validated');
+   plan.expiresAt=Date.now()+(plan.expires_in||300)*1000;plans.push({row,plan});if(generation!==reviewGeneration||!$('sync-dialog').open)break;if(review.bulk)setBulkState(index,review.action==='source-scale-zero'?`Validated · ${plan.previous_replicas} → 0 replicas`:'Validated');
   }
   if(generation!==reviewGeneration||!$('sync-dialog').open){await discardPreview({bulk:true,plans});return;}
   if(scopeFingerprint()!==review.scope)throw Error('Scope changed. Close this review and run analysis again.');
@@ -318,29 +319,40 @@ $('preview-guarded').onclick=()=>{$('update-strategy').value='merge';validateRev
 
 function syncImpact(row){if(row.kind==='Secret')return 'Sync this Secret to the target. Running applications may be affected. Secret rollback backups are not stored.';if(row.kind==='HorizontalPodAutoscaler')return 'Sync this autoscaling configuration to the target. It may immediately change workload replica counts.';return 'Copy this configuration to the target. Running applications that consume it may be affected.';}
 
-function bulkCandidates(action){return report?filteredResources().filter(row=>canSync(row)&&(action==='activate'?isWorkload(row):!isWorkload(row))):[];}
+function bulkCandidates(action){return report?filteredResources().filter(row=>action==='source-scale-zero'?canScaleSource(row):canSync(row)&&(action==='activate'?isWorkload(row):!isWorkload(row))):[];}
+function bulkActionText(action){return action==='source-scale-zero'?'Scale all source to zero':action==='sync'?'Sync all':'Activate all';}
 function updateBulkActions(){
- let visible=false;for(const action of ['sync','activate']){const rows=bulkCandidates(action),button=$('bulk-'+action);button.hidden=rows.length<2;button.disabled=writeInFlight||previewInFlight||rows.length>100;button.textContent=(action==='sync'?'Sync all':'Activate all')+' ('+rows.length+')';button.title=rows.length>100?'Narrow the filters to at most 100 resources per batch.':'Applies only to the eligible filtered resources shown below.';visible=visible||rows.length>=2;}$('bulk-actions').hidden=!visible;
+ let sourceVisible=false,targetVisible=false;
+ for(const action of ['sync','activate','source-scale-zero']){
+  const rows=bulkCandidates(action),button=$('bulk-'+action),visible=rows.length>=2;
+  button.hidden=!visible;button.disabled=writeInFlight||previewInFlight||rows.length>100;
+  button.textContent=bulkActionText(action)+' ('+rows.length+')';
+  button.title=rows.length>100?'Narrow the filters to at most 100 resources per batch.':'Applies only to the eligible filtered resources shown below.';
+  if(action==='source-scale-zero')sourceVisible=visible;else targetVisible=targetVisible||visible;
+ }
+ $('bulk-source-actions').hidden=!sourceVisible;$('bulk-target-actions').hidden=!targetVisible;
+ $('bulk-actions').hidden=!sourceVisible&&!targetVisible;
 }
 function openBulkReview(action){
  if(writeInFlight||previewInFlight)return;const rows=bulkCandidates(action);if(rows.length<2||rows.length>100)return;
  pendingRollback=false;pendingPlan=null;activeReview={bulk:true,rows:[...rows],action,base:structuredClone(analyzedPayload),scope:scopeFingerprint()};
  $('sync-cancel').textContent='Cancel';$('bulk-review').hidden=false;$('bulk-review-rows').replaceChildren();
  for(const row of rows){const tr=document.createElement('tr'),name=document.createElement('td'),state=document.createElement('td');name.textContent=row.kind+'/'+row.name+' · '+row.namespace;state.textContent='Pending validation';tr.append(name,state);$('bulk-review-rows').append(tr);}
- $('update-strategy').value='apply';$('strategy-control').hidden=false;$('review-advanced').open=false;$('review-manifest').open=false;
- $('confirm-title').textContent=action==='sync'?'Review sync all':'Review activate all';$('sync-confirm').textContent=(action==='sync'?'Sync all':'Activate all')+' '+rows.length+' resources';$('sync-confirm').classList.toggle('activate-action',action==='activate');
- setReviewSummary('target',activeReview.base.target_context,[...new Set(rows.map(row=>row.namespace))].join(', '),rows.length+' filtered resources',reviewChange(activeReview));
- $('confirm-impact').textContent=action==='sync'?'Sync the listed configuration resources. Running workloads may be affected; Secret rollback backups are not stored.':'Activate the listed workloads using their source configuration. The source remains running; coordinate duplicate processing and traffic cutover.';
+ $('update-strategy').value='apply';$('strategy-control').hidden=action==='source-scale-zero';$('review-advanced').open=false;$('review-manifest').open=false;
+ $('confirm-title').textContent=action==='source-scale-zero'?'Review SOURCE scale all to zero':action==='sync'?'Review sync all':'Review activate all';$('sync-confirm').textContent=bulkActionText(action)+' ('+rows.length+')';$('sync-confirm').classList.toggle('activate-action',action==='activate');
+ setReviewSummary(action==='source-scale-zero'?'source':'target',action==='source-scale-zero'?activeReview.base.source_context:activeReview.base.target_context,[...new Set(rows.map(row=>row.namespace))].join(', '),rows.length+' filtered resources',reviewChange(activeReview));
+ $('confirm-impact').textContent=action==='source-scale-zero'?'This stops all listed SOURCE workloads and can interrupt traffic or processing. Verify target readiness and coordinate cutover. Execution is sequential and stops on the first failure; earlier changes remain applied.':action==='sync'?'Sync the listed configuration resources. Running workloads may be affected; Secret rollback backups are not stored.':'Activate the listed workloads using their source configuration. The source remains running; coordinate duplicate processing and traffic cutover.';
  $('sync-dialog').showModal();validateReview();
 }
+$('bulk-source-scale-zero').onclick=()=>openBulkReview('source-scale-zero');
 $('bulk-sync').onclick=()=>openBulkReview('sync');$('bulk-activate').onclick=()=>openBulkReview('activate');
 async function executeBulk(){
- const batch=pendingPlan;pendingPlan=null;writeInFlight=true;$('sync-confirm').disabled=true;$('sync-cancel').disabled=true;$('update-strategy').disabled=true;let completed=0,currentIndex=-1;
+ const batch=pendingPlan,sourceScale=activeReview?.action==='source-scale-zero';pendingPlan=null;writeInFlight=true;$('sync-confirm').disabled=true;$('sync-cancel').disabled=true;$('update-strategy').disabled=true;let completed=0,currentIndex=-1;
  try{
   if(!activeReview||scopeFingerprint()!==activeReview.scope)throw Error('Scope changed. Run analysis again.');
   for(let i=0;i<batch.plans.length;i++){
    currentIndex=i;const {row,plan}=batch.plans[i];setBulkState(i,'Applying…');$('review-status').textContent=`Applying ${i+1} of ${batch.plans.length}: ${row.kind}/${row.name}`;$('overview-activity').textContent=`Applying ${i+1}/${batch.plans.length}`;
-   try{await clusterRequest('/api/sync/execute',{token:plan.token,confirm:true});completed++;setBulkState(i,'Applied · check readiness');}
+   try{await clusterRequest(sourceScale?'/api/source/scale/execute':'/api/sync/execute',{token:plan.token,confirm:true});completed++;setBulkState(i,'Applied · check readiness');}
    catch(error){setBulkState(i,'Stopped: '+error.message);throw error;}
   }
   $('review-status').textContent=`Applied ${completed} resources. API acceptance is not readiness; check operation history and re-analyze.`;$('overview-activity').textContent=`Applied ${completed} resources`;
