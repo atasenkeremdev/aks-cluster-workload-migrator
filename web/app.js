@@ -56,12 +56,37 @@ const a=row.manifest?flat(row.manifest):{}, b=row.target_manifest?flat(row.targe
 for(const [id,values] of [['source-preview',a],['target-preview',b]]){$(id).replaceChildren();if(!paths.length)$(id).textContent='Resource absent on this side';for(const path of paths){const line=document.createElement('div');line.textContent=path+' = '+(values[path]??'— absent');if(a[path]!==b[path]||row.diff_paths.some(p=>path===p||path.startsWith(p+'/')))line.className='diff-line';$(id).append(line);}}
 }
 function isWorkload(row){return ['Deployment','StatefulSet','DaemonSet','CronJob','ActiveMQArtemis'].includes(row.kind);}
-function actionButtons(row){
+function actionButtons(row,side){
  const group=document.createDocumentFragment();
- const actions=canSync(row)?(isWorkload(row)?(['Deployment','StatefulSet','CronJob'].includes(row.kind)?['prepare','activate']:['activate']):['sync']):[];
- if(canScaleSource(row))actions.push('source-scale-zero');
- for(const action of actions){const block=document.createElement('div');block.className='action-choice';const button=document.createElement('button');button.type='button';button.dataset.sync='true';button.dataset.action=action;button.textContent=actionText(action);button.classList.toggle('activate-action',['activate','source-scale-zero'].includes(action));button.onclick=()=>{showVersus(row);openReview(row,action);};block.append(button);const hint=document.createElement('small');hint.textContent=action==='source-scale-zero'?'Stops this SOURCE workload':action==='prepare'?(row.kind==='CronJob'?'Suspend scheduled jobs':'Set replicas to zero'):action==='activate'?'May start target workloads':'Copy configuration';block.append(hint);group.append(block);}
+ for(const role of side?[side]:['target','source']){
+  const actions=role==='source'?(canScaleSource(row)?['source-scale-zero']:[]):canSync(row)?(isWorkload(row)?(['Deployment','StatefulSet','CronJob'].includes(row.kind)?['prepare','activate']:['activate']):['sync']):[];
+  if(!actions.length)continue;
+  const section=document.createElement('section');section.className='resource-actions '+role+'-actions';section.setAttribute('aria-label',role==='source'?'Source actions':'Target actions');
+  const title=document.createElement('strong');title.className='action-group-title';title.textContent=role==='source'?'Source actions':'Target actions';section.append(title);
+  const buttons=document.createElement('div');buttons.className='action-group-buttons';
+  for(const action of actions){const block=document.createElement('div');block.className='action-choice';const button=document.createElement('button');button.type='button';button.dataset.sync='true';button.dataset.action=action;button.textContent=actionText(action);button.classList.toggle('activate-action',action==='activate');button.classList.toggle('source-stop-action',role==='source');button.onclick=()=>{showVersus(row);openReview(row,action);};block.append(button);const hint=document.createElement('small');hint.textContent=role==='source'?'Stops source pods':action==='prepare'?(row.kind==='CronJob'?'Suspend scheduled jobs':'Keep target inactive'):action==='activate'?'Start target workloads':'Copy configuration';block.append(hint);buttons.append(block);}
+  section.append(buttons);group.append(section);
+ }
  return group;
+}
+function setReviewSummary(role,context,namespace,resource,change){
+ $('sync-dialog').dataset.role=role;
+ $('review-role').textContent=role==='source'?'SOURCE CLUSTER CHANGE':'TARGET CLUSTER CHANGE';
+ $('review-cluster').textContent=context;$('review-namespace').textContent=namespace;
+ $('sync-description').textContent=resource;$('review-change').textContent=change;
+ $('strategy-help').hidden=role==='source';
+}
+function reviewChange(review,plan){
+ if(review.action==='source-scale-zero')return plan?`${plan.previous_replicas} → 0 replicas`:'Scale replicas to zero';
+ if(review.bulk)return `${review.rows.length} resources · ${review.action==='sync'?'Sync configuration':'Activate workloads'}`;
+ const row=review.row;
+ if(review.action==='prepare')return row.kind==='CronJob'?'Suspend scheduled jobs':['Deployment','StatefulSet'].includes(row.kind)?'Set target replicas to 0':'Copy configuration';
+ if(review.action==='activate'){
+  if(row.kind==='CronJob')return plan?.manifest?.spec?.suspend?'Keep scheduled jobs suspended':'Enable scheduled jobs';
+  if(['Deployment','StatefulSet'].includes(row.kind))return `Set target replicas to ${plan?.manifest?.spec?.replicas??row.manifest.spec?.replicas??1}`;
+  return 'Activate target workload';
+ }
+ return 'Sync configuration to target';
 }
 function actionText(action){return action==='source-scale-zero'?'Scale source to zero':action==='prepare'?'Prepare target':action==='activate'?'Activate target':'Sync to target';}
 function openReview(row,action){
@@ -71,7 +96,7 @@ function openReview(row,action){
  $('update-strategy').value='apply';$('strategy-control').hidden=action==='source-scale-zero';$('review-advanced').open=false;$('review-manifest').open=false;
  $('confirm-title').textContent=action==='source-scale-zero'?'Review SOURCE scale to zero':action==='sync'?'Review configuration sync':action==='prepare'?'Review passive preparation':'Review activation';
  $('sync-confirm').textContent=actionText(action);$('sync-confirm').classList.toggle('activate-action',['activate','source-scale-zero'].includes(action));
- $('sync-description').textContent=(action==='source-scale-zero'?'SOURCE: ':'TARGET: ')+row.kind+'/'+row.name+' → '+(action==='source-scale-zero'?activeReview.base.source_context:activeReview.base.target_context)+' / '+row.namespace;
+ setReviewSummary(action==='source-scale-zero'?'source':'target',action==='source-scale-zero'?activeReview.base.source_context:activeReview.base.target_context,row.namespace,row.kind+'/'+row.name,reviewChange(activeReview));
  $('confirm-impact').textContent=action==='source-scale-zero'?'Set this SOURCE workload to zero replicas. This stops its pods and can interrupt traffic or processing. Confirm target readiness and coordinate cutover first. The target is unchanged.':action==='sync'?syncImpact(row):action==='prepare'?prepareImpact(row):'Apply the source workload configuration and allow it to run on the target. The source stays running; coordinate traffic and duplicate processing.';
  $('sync-dialog').showModal();validateReview();
 }
@@ -103,9 +128,10 @@ async function validateReview(){
   if(expiresAt<=Date.now())throw Error('Validation took longer than the preview lifetime. Narrow the result filters and try again.');
   pendingPlan=review.bulk?{bulk:true,plans,expiresAt}:plans[0].plan;armPreviewExpiry();
   $('sync-manifest').textContent=JSON.stringify(review.bulk?plans.map(item=>item.plan.manifest):plans[0].plan.manifest,null,2);
-  if(review.action==='source-scale-zero')$('confirm-impact').textContent=`Set SOURCE ${review.row.kind}/${review.row.name} from ${plans[0].plan.previous_replicas} to 0 replicas. This stops its pods and can interrupt traffic or processing. Confirm target readiness and coordinate cutover first.`;
+  $('review-change').textContent=reviewChange(review,plans[0].plan);
+  if(review.action==='source-scale-zero')$('confirm-impact').textContent='This stops source pods and can interrupt traffic or processing. Verify target readiness and coordinate cutover before confirming.';
   $('sync-warnings').textContent=[...new Set(plans.flatMap(item=>[item.plan.update_effect,...(item.plan.warnings||[])].filter(Boolean)))].join(' ');
-  $('review-status').textContent=review.bulk?`All ${rows.length} resources passed validation. Confirm to apply sequentially; previews expire in 5 minutes.`:'Validation passed. Review the effect above, then confirm. Preview expires in 5 minutes.';$('sync-confirm').disabled=false;$('overview-activity').textContent='Awaiting confirmation';
+  $('review-status').textContent=review.bulk?`All ${rows.length} resources passed validation. Confirm to apply sequentially; previews expire in 5 minutes.`:'Ready for confirmation · preview expires in 5 minutes.';$('sync-confirm').disabled=false;$('overview-activity').textContent='Awaiting confirmation';
  }catch(error){
   await discardPreview({bulk:true,plans});
   if(generation!==reviewGeneration||!$('sync-dialog').open)return;
@@ -188,8 +214,8 @@ function renderResources(){
     for(const side of ['source','target']){
       const td=document.createElement('td'),manifest=side==='source'?row.manifest:row.target_manifest;
       if(manifest){const name=document.createElement('button');name.type='button';name.className='resource-name';name.textContent=row.name;name.onclick=()=>{showVersus(row);$('versus').scrollIntoView({block:'start'});};td.append(name);const meta=document.createElement('div');meta.className='resource-meta';meta.textContent=row.kind+' · '+(row.namespace||'cluster');td.append(meta);
-        if(side==='source'&&(canSync(row)||canScaleSource(row))){const actions=document.createElement('div');actions.className='row-actions';actions.append(actionButtons(row));td.append(actions);}
       }else{const absent=document.createElement('span');absent.className='resource-absent';absent.textContent='Absent on this side';td.append(absent);const meta=document.createElement('div');meta.className='resource-meta';meta.textContent=row.kind+' · '+(row.namespace||'cluster');td.append(meta);}
+      if(side==='source'?canScaleSource(row):canSync(row)){const actions=document.createElement('div');actions.className='row-actions';actions.append(actionButtons(row,side));td.append(actions);}
       tr.append(td);
     }
     fragment.append(tr);
@@ -206,7 +232,7 @@ async function loadHistory(){
  try{const data=await clusterRequest('/api/history');$('history-rows').replaceChildren();for(const op of data.operations){const tr=document.createElement('tr');for(const text of [new Date(op.updated_at).toLocaleString()+' / '+op.mode+(op.cluster_role==='source'?' · replicas '+op.previous_replicas+' → 0':''),(op.cluster_role==='source'?'SOURCE: ':'TARGET: ')+op.target+' / '+op.namespace+' / '+op.kind+'/'+op.name,op.status+(op.health?' · '+op.health.state+' — '+op.health.detail:'')]){const td=document.createElement('td');td.textContent=text;tr.append(td);}const actions=document.createElement('td');if(op.applied_uid&&op.status!=='RolledBack'){const health=document.createElement('button');health.textContent='Check readiness';health.onclick=async()=>{health.disabled=true;try{const result=await clusterRequest('/api/operations/health',{operation_id:op.id});$('history-status').textContent=result.state+' — '+result.detail;await loadHistory();}catch(error){$('history-status').textContent=error.message;}finally{health.disabled=false;}};actions.append(health);}if(op.rollback_available){const rollback=document.createElement('button');rollback.textContent='Preview rollback';rollback.onclick=()=>prepareRollback(op.id);actions.append(rollback);}tr.append(actions);$('history-rows').append(tr);}renderOutcomes(data.operations);$('history-status').textContent=data.operations.length+' recent operations loaded. These are recorded checks; refresh readiness for current state.';}catch(error){$('history-status').textContent=error.message;}
 }
 $('load-history').onclick=loadHistory;
-async function prepareRollback(id){if(writeInFlight||previewInFlight)return;previewInFlight=true;$('bulk-review').hidden=true;$('sync-cancel').textContent='Cancel';activeReview=null;reviewGeneration++;$('strategy-control').hidden=true;$('review-advanced').open=false;$('review-manifest').open=false;$('review-conflict').hidden=true;$('review-error').textContent='';$('review-status').textContent='Review this rollback before confirming.';$('overview-activity').textContent='Preparing rollback preview…';setStep('execute');try{pendingPlan=await clusterRequest('/api/rollback/plan',{operation_id:id});pendingRollback=true;$('confirm-title').textContent='Confirm rollback';$('confirm-impact').textContent=pendingPlan.operation==='restore'?'The pre-sync target configuration will be restored. This may change a running workload.':'The target resource created by this sync will be deleted. Data and external effects are not restored.';$('sync-confirm').classList.add('activate-action');$('sync-confirm').textContent='Confirm rollback';$('sync-description').textContent=pendingPlan.operation+' '+pendingPlan.kind+'/'+pendingPlan.name+' → '+pendingPlan.target_context+' / '+pendingPlan.namespace;$('sync-manifest').textContent=pendingPlan.manifest?JSON.stringify(pendingPlan.manifest,null,2):'Delete the resource created by this sync (UID and resourceVersion preconditions).';$('sync-warnings').textContent=pendingPlan.warning;$('sync-confirm').disabled=false;$('sync-dialog').showModal();}catch(error){$('history-status').textContent=error.message;}finally{previewInFlight=false;}}
+async function prepareRollback(id){if(writeInFlight||previewInFlight)return;previewInFlight=true;$('bulk-review').hidden=true;$('sync-cancel').textContent='Cancel';activeReview=null;reviewGeneration++;$('strategy-control').hidden=true;$('review-advanced').open=false;$('review-manifest').open=false;$('review-conflict').hidden=true;$('review-error').textContent='';$('review-status').textContent='Review this rollback before confirming.';$('overview-activity').textContent='Preparing rollback preview…';setStep('execute');try{pendingPlan=await clusterRequest('/api/rollback/plan',{operation_id:id});pendingRollback=true;$('confirm-title').textContent='Confirm rollback';$('confirm-impact').textContent=pendingPlan.operation==='restore'?'The pre-sync target configuration will be restored. This may change a running workload.':'The target resource created by this sync will be deleted. Data and external effects are not restored.';$('sync-confirm').classList.add('activate-action');$('sync-confirm').textContent='Confirm rollback';setReviewSummary('target',pendingPlan.target_context,pendingPlan.namespace,pendingPlan.kind+'/'+pendingPlan.name,pendingPlan.operation==='restore'?'Restore previous configuration':'Delete resource created by sync');$('sync-manifest').textContent=pendingPlan.manifest?JSON.stringify(pendingPlan.manifest,null,2):'Delete the resource created by this sync (UID and resourceVersion preconditions).';$('sync-warnings').textContent=pendingPlan.warning;$('sync-confirm').disabled=false;$('sync-dialog').showModal();}catch(error){$('history-status').textContent=error.message;}finally{previewInFlight=false;}}
 async function trackReadiness(id){for(let attempt=0;attempt<12;attempt++){try{const result=await clusterRequest('/api/operations/health',{operation_id:id});$('overview-activity').textContent=result.state;$('sync-status').textContent=result.state+' — '+result.detail;await loadHistory();if(result.state!=='RollingOut')return;}catch(error){$('sync-status').textContent='Applied; readiness check failed: '+error.message;return;}await new Promise(resolve=>setTimeout(resolve,5000));}$('sync-status').textContent='Still rolling out. Use Check readiness in operation history to continue monitoring.';}
 
 function canScaleSource(row){return Boolean(analyzedPayload&&!scopeStale&&row.manifest&&['Deployment','StatefulSet'].includes(row.kind)&&row.apiVersion==='apps/v1'&&(row.manifest.spec?.replicas??1)>0);}
@@ -303,7 +329,7 @@ function openBulkReview(action){
  for(const row of rows){const tr=document.createElement('tr'),name=document.createElement('td'),state=document.createElement('td');name.textContent=row.kind+'/'+row.name+' · '+row.namespace;state.textContent='Pending validation';tr.append(name,state);$('bulk-review-rows').append(tr);}
  $('update-strategy').value='apply';$('strategy-control').hidden=false;$('review-advanced').open=false;$('review-manifest').open=false;
  $('confirm-title').textContent=action==='sync'?'Review sync all':'Review activate all';$('sync-confirm').textContent=(action==='sync'?'Sync all':'Activate all')+' '+rows.length+' resources';$('sync-confirm').classList.toggle('activate-action',action==='activate');
- $('sync-description').textContent=rows.length+' filtered resources → '+activeReview.base.target_context+' / '+new Set(rows.map(row=>row.namespace)).size+' namespace(s)';
+ setReviewSummary('target',activeReview.base.target_context,[...new Set(rows.map(row=>row.namespace))].join(', '),rows.length+' filtered resources',reviewChange(activeReview));
  $('confirm-impact').textContent=action==='sync'?'Sync the listed configuration resources. Running workloads may be affected; Secret rollback backups are not stored.':'Activate the listed workloads using their source configuration. The source remains running; coordinate duplicate processing and traffic cutover.';
  $('sync-dialog').showModal();validateReview();
 }

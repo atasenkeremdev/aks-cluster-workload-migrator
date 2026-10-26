@@ -131,7 +131,7 @@ target, namespace count, action mode, connection and current activity visible.
    downloads retain the full analysis.
 6. Click either resource name for expected source-on-target (left) and current
    target (right). Changed fields appear red and Secret values are masked.
-7. Choose an action beside the source resource. Configuration uses **Sync to
+7. Choose an action in the **Target actions** area of the target column. Configuration uses **Sync to
    target**. Workloads offer **Prepare target** and **Activate target**; DaemonSet
    and AMQ offer activation only because passive preparation is unsupported.
    Actions appear only for DIFF/SOURCE_ONLY. MATCH and target-only resources
@@ -344,3 +344,19 @@ Chromium. `BROWSER_EXECUTABLE` can point at a local browser binary. It covers
 responsive layout, default difference filtering, search, stage navigation,
 namespace selection, live progress and simulated configuration-sync and prepare/activate/rollback workflows,
 including inline ownership-conflict recovery and cancellation during preview. It never writes to a real cluster.
+
+### Action layout and confirmation
+
+The comparison keeps **Source actions** in the source column and **Target actions**
+in the target column, including target creation when a resource is absent there.
+Source shutdown uses a separate red action area; target preparation, activation
+and configuration sync use their own labeled area. Resource details keep these
+areas separate as well.
+
+Each review shows the affected cluster role, exact cluster context, namespace,
+resource and change in a compact summary. Source scaling shows the validated
+replica change (for example, **2 → 0 replicas**). Batch reviews summarize the
+selected namespaces and list every resource; rollback reviews show restore or
+delete explicitly. The impact warning and validation state remain visible.
+Update methods, server warnings and masked manifests stay in collapsed technical
+details. Confirmation still requires successful server validation.

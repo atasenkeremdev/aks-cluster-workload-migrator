@@ -86,14 +86,19 @@
   </section>
 </main>
 <dialog id="sync-dialog" aria-labelledby="confirm-title">
-  <div class="dialog-header"><span class="eyebrow">REVIEW CLUSTER CHANGE</span><h2 id="confirm-title">Review resource update</h2></div>
-  <p id="sync-description" class="confirm-destination"></p>
+  <div class="dialog-header"><span id="review-role" class="eyebrow">REVIEW CLUSTER CHANGE</span><h2 id="confirm-title">Review resource update</h2></div>
+  <dl class="review-summary">
+    <div><dt>Cluster</dt><dd id="review-cluster"></dd></div>
+    <div><dt>Namespace</dt><dd id="review-namespace"></dd></div>
+    <div class="review-resource"><dt>Resource</dt><dd id="sync-description"></dd></div>
+    <div class="review-effect"><dt>Change</dt><dd id="review-change"></dd></div>
+  </dl>
   <p id="confirm-impact" class="warning"></p>
   <section id="bulk-review" hidden><p class="muted">Resources are applied sequentially. Execution stops on the first failure; earlier changes are not automatically rolled back.</p><div class="table-wrap bulk-resource-list"><table><thead><tr><th>Resource</th><th>Status</th></tr></thead><tbody id="bulk-review-rows"></tbody></table></div></section><p id="review-status" role="status">Validating target…</p>
   <section id="review-conflict" class="warning" hidden><strong id="conflict-summary"></strong><p id="conflict-note">No changes have been applied.</p><button id="retry-preview" type="button" hidden>Refresh preview</button><button id="preview-guarded" type="button" hidden>Review guarded update</button></section>
   <details id="review-advanced"><summary>Advanced options and technical details</summary>
     <label id="strategy-control">Existing target update method<select id="update-strategy"><option value="apply">Server-side apply · respect field ownership</option><option value="merge">Guarded merge update · overwrite submitted fields</option></select></label>
-    <p class="muted">Guarded updates preserve omitted fields but replace submitted lists. A new server-side preview is required before confirmation.</p>
+    <p id="strategy-help" class="muted">Guarded updates preserve omitted fields but replace submitted lists. A new server-side preview is required before confirmation.</p>
     <p id="review-error" class="muted"></p><p id="sync-warnings" class="muted"></p>
   </details>
   <details id="review-manifest"><summary>Manifest preview · Secret values are redacted</summary><pre id="sync-manifest"></pre></details>
