@@ -11,12 +11,18 @@
   <a class="brand" href="/">◈ <span>AKS Migrator</span></a>
   <p class="nav-label">WORKSPACE</p>
   <a class="nav-item" href="#scope">Migration plan</a>
+  <a class="nav-item secondary" href="#iam-panel" data-workspace="iam">IAM inventory</a>
   <a class="nav-item secondary" href="#operations">Operation history</a>
   <div class="sidebar-note">Preview every change first.<br>The source cluster is never stopped automatically.</div>
   <small>v0.5 · Prepare & activate</small>
 </aside>
 <main>
-  <header class="workspace-header"><span>WORKLOAD MIGRATION</span><span class="local-badge">● Local workspace</span></header>
+  <header class="workspace-header"><span id="workspace-title">WORKLOAD MIGRATION</span><span class="local-badge">● Local workspace</span></header>
+  <nav class="workspace-tabs" role="tablist" aria-label="Workspace">
+    <button id="tab-workloads" type="button" role="tab" aria-selected="true" aria-controls="workload-panel">Workload migration</button>
+    <button id="tab-iam" type="button" role="tab" aria-selected="false" aria-controls="iam-panel" tabindex="-1">IAM inventory</button>
+  </nav>
+  <section id="workload-panel" role="tabpanel" aria-labelledby="tab-workloads">
   <section class="migration-bar" aria-label="Migration overview">
     <div class="route"><div><span class="eyebrow">SOURCE</span><strong id="overview-source">Select a source</strong></div><span class="route-arrow">→</span><div><span class="eyebrow">TARGET</span><strong id="overview-target">Select a target</strong></div></div>
     <div class="overview-meta"><span id="overview-namespaces">0 namespace</span><span id="overview-activity" role="status">No operation running</span><span id="overview-connection" class="connection-badge">Connection pending</span></div>
@@ -87,6 +93,35 @@
     <details id="history-details"><summary>Operation history and rollback</summary><div class="table-wrap"><table><thead><tr><th>Time / mode</th><th>Cluster resource</th><th>Status</th><th>Actions</th></tr></thead><tbody id="history-rows"></tbody></table></div></details>
     <p class="footnote">Applied means API acceptance. Ready means controller readiness, not application health. Secret rollback backups are not stored.</p>
   </section>
+  </section>
+  <section id="iam-panel" role="tabpanel" aria-labelledby="tab-iam" hidden>
+    <div class="page-heading"><span class="eyebrow">IDENTITY AND ACCESS</span><h1>IAM sync inventory</h1><p class="muted">Compare identity and access configuration in an independent, read-only scan. Nothing is applied to either cluster.</p></div>
+    <form id="iam-form" class="card">
+      <div class="section-toolbar"><h2>Inventory scope</h2><button id="iam-connect" type="button">Load IAM contexts</button></div>
+      <p id="iam-connection" class="muted" role="status">IAM scope and progress are independent of workload migration.</p>
+      <div class="grid"><label>Source context<select id="iam-source" required><option value="">Select source context</option></select></label><label>Target context<select id="iam-target" required><option value="">Select target context</option></select></label></div>
+      <label>Namespaces (optional)<input id="iam-namespaces" placeholder="All non-excluded namespaces, or comma-separated names"></label>
+      <p class="muted">Kubernetes: ServiceAccounts, Roles, RoleBindings, ClusterRoles and ClusterRoleBindings. Cluster-scoped RBAC is always included. System and file namespace exclusions apply.</p>
+      <label class="check-label"><input id="iam-azure" type="checkbox" checked> Include Azure IAM</label>
+      <div id="iam-azure-fields" class="grid"><label>Source AKS resource ID<input id="iam-azure-source" required placeholder="/subscriptions/…/resourceGroups/…/providers/Microsoft.ContainerService/managedClusters/…"></label><label>Target AKS resource ID<input id="iam-azure-target" required placeholder="/subscriptions/…/resourceGroups/…/providers/Microsoft.ContainerService/managedClusters/…"></label></div>
+      <p class="muted">Azure: AKS access/identity profiles, related managed identities, federated credentials and role assignments. Uses the application host's Azure CLI session. Confirm each resource ID belongs to its selected kubeconfig context.</p>
+      <div class="actions"><p id="iam-error" role="alert"></p><button id="iam-start" class="primary">Scan IAM inventory</button></div>
+    </form>
+    <section id="iam-progress" class="card" hidden aria-label="IAM scan progress"><h2>IAM scan progress</h2><p id="iam-progress-status" role="status"></p><details><summary>Read activity</summary><pre id="iam-progress-log"></pre></details></section>
+    <section id="iam-results" hidden>
+      <div class="section-heading"><h2>IAM comparison</h2><button id="iam-download" type="button">Download IAM report</button></div>
+      <p id="iam-result-scope" class="muted"></p><p id="iam-stale" class="warning" hidden>IAM scope changed. The results below belong to the previous scan.</p>
+      <p id="iam-completeness" class="warning" role="status"></p>
+      <div id="iam-summary" class="metrics"></div>
+      <details id="iam-coverage" class="card"><summary>Coverage and read permissions</summary><ul id="iam-coverage-list"></ul></details>
+      <div class="card"><div class="grid"><label>Search IAM resources<input id="iam-search" type="search" placeholder="Name, namespace or kind"></label><label>Provider<select id="iam-provider"><option value="">All providers</option><option>Kubernetes</option><option>Azure</option></select></label><label>Kind<select id="iam-kind"><option value="">All kinds</option></select></label><label>Status<select id="iam-status"><option value="">All statuses</option><option>MATCH</option><option>DIFF</option><option>SOURCE_ONLY</option><option>TARGET_ONLY</option><option>UNKNOWN</option></select></label></div>
+        <p id="iam-count" class="muted" role="status"></p><div class="table-wrap"><table><thead><tr><th>Provider / kind</th><th>Resource / namespace</th><th>Status</th><th>Review</th></tr></thead><tbody id="iam-rows"></tbody></table></div>
+        <div class="iam-pagination"><button id="iam-prev" type="button">Previous</button><span id="iam-page" class="muted"></span><button id="iam-next" type="button">Next</button></div>
+      </div>
+      <section id="iam-detail" class="card" hidden><h2 id="iam-detail-title"></h2><p id="iam-detail-recommendation" class="warning"></p><div class="versus-grid"><div><h3>Source IAM configuration</h3><pre id="iam-detail-source"></pre></div><div><h3>Target IAM configuration</h3><pre id="iam-detail-target"></pre></div></div><p id="iam-detail-paths" class="muted"></p></section>
+      <details class="technical"><summary>Inventory scope and limitations</summary><p id="iam-notice" class="muted"></p></details>
+    </section>
+  </section>
 </main>
 <dialog id="sync-dialog" aria-labelledby="confirm-title">
   <div class="dialog-header"><span id="review-role" class="eyebrow">REVIEW CLUSTER CHANGE</span><h2 id="confirm-title">Review resource update</h2></div>
@@ -108,5 +143,6 @@
   <div class="dialog-actions"><button id="sync-cancel" type="button">Cancel</button><button id="sync-confirm" type="button" class="primary" disabled>Confirm</button></div>
 </dialog>
 <script src="/app.js"></script>
+<script src="/iam.js"></script>
 </body>
 </html>

@@ -6,7 +6,7 @@ from pathlib import Path
 from .core import analyze, load_exclusions, PROTECTED, STATIC_EXCLUSIONS, DEFAULT_EXCLUSIONS_FILE
 from .kubernetes import ClusterError, contexts, namespaces, live_analyze, sync_plan, sync_execute, operation_health, rollback_plan, rollback_execute, discard_plans, source_scale_plan, source_scale_execute
 
-from . import jobs, history
+from . import jobs, history, iam_jobs
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
@@ -14,6 +14,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/api/namespace-policy':
             self.reply(200, {'protected_namespaces': sorted(PROTECTED), 'static_exclusions': sorted(STATIC_EXCLUSIONS)})
+        elif self.path.startswith('/api/iam/jobs/'):
+            try:
+                self.reply(200, iam_jobs.status(self.path.removeprefix('/api/iam/jobs/')))
+            except ClusterError as error:
+                self.reply(error.status, {'error': str(error)})
         elif self.path.startswith('/api/jobs/'):
             try:
                 self.reply(200, jobs.status(self.path.removeprefix('/api/jobs/')))
@@ -31,7 +36,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(error.status, {'error': str(error), 'category': error.category})
         elif self.path == '/health':
             self.reply(200, {'status': 'ok'})
-        elif self.path in ('/', '/app.js', '/style.css'):
+        elif self.path in ('/', '/app.js', '/iam.js', '/style.css'):
             name = 'index.html' if self.path == '/' else self.path[1:]
             data = (WEB / name).read_bytes()
             self.send_response(200)
@@ -61,7 +66,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get_content_type() != 'application/json':
             self.reply(415, {'error': 'Content-Type must be application/json.'})
             return
-        if self.path not in ('/api/source/scale/plan', '/api/source/scale/execute', '/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute', '/api/live/jobs', '/api/operations/health', '/api/rollback/plan', '/api/rollback/execute', '/api/sync/discard'):
+        if self.path not in ('/api/iam/jobs', '/api/source/scale/plan', '/api/source/scale/execute', '/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute', '/api/live/jobs', '/api/operations/health', '/api/rollback/plan', '/api/rollback/execute', '/api/sync/discard'):
             self.reply(404, {'error': 'Not found'})
             return
         try:
@@ -70,6 +75,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(413, {'error': 'JSON payload must be between 1 byte and 5 MB'})
                 return
             body = json.loads(self.rfile.read(length))
+            if self.path == '/api/iam/jobs':
+                self.reply(202, iam_jobs.start(body))
+                return
             if self.path == '/api/live/jobs':
                 self.reply(202, jobs.start(body))
                 return

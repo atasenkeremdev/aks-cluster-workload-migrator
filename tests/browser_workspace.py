@@ -49,6 +49,120 @@ class WorkspaceBrowserTests(unittest.TestCase):
         self.temp.cleanup()
         self.assertFalse(self.errors)
 
+    def test_iam_workspace_is_independent_partial_read_only_and_exportable(self):
+        page = self.page
+        source_id = '/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/source/providers/Microsoft.ContainerService/managedClusters/source'
+        target_id = '/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/target/providers/Microsoft.ContainerService/managedClusters/target'
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+        reads = []
+        def run(args,payload=None):
+            reads.append(args)
+            self.assertIsNone(payload)
+            if 'get-contexts' in args:return 'source\ntarget\n'
+            self.assertIn('get',args)
+            context = args[args.index('--context')+1]
+            resource = args[args.index('get')+1]
+            if resource=='serviceaccounts':
+                return json.dumps({'items':[{'metadata':{'name':'app','namespace':'demo','annotations':{
+                    'azure.workload.identity/client-id':'client-'+context,'unsafe':'PRIVATE-TOKEN'}},'secrets':[{'name':'PRIVATE-TOKEN'}]}]})
+            if resource=='roles.rbac.authorization.k8s.io':
+                if context=='target':raise ClusterError('Kubernetes denied access (RBAC Forbidden).')
+                return json.dumps({'items':[{'metadata':{'name':'read-pods','namespace':'demo'},'rules':[{'apiGroups':[''],'verbs':['get'],'resources':['pods']}]}]})
+            return '{"items":[]}'
+        def azure(args):
+            self.assertTrue('list' in args or 'show' in args)
+            source = args[args.index('--subscription')+1].startswith('1111')
+            context='source' if source else 'target'
+            if args[:2]==['aks','show']:
+                gate.wait(15)
+                return {'enableRbac':True,'identity':{'type':'SystemAssigned','principalId':'principal-'+context},
+                        'aadProfile':{'enableAzureRbac':True,'unsafe':'PRIVATE-TOKEN'}}
+            if args[:2]==['identity','list']:
+                return [{'id':'/identity/'+context,'name':'app','resourceGroup':'identities','clientId':'client-'+context,'principalId':'workload-'+context}]
+            if args[:3]==['identity','federated-credential','list']:
+                return [{'name':'app','issuer':'https://issuer-'+context+'.example','subject':'system:serviceaccount:demo:app','audiences':['api://AzureADTokenExchange']}]
+            return []
+        # Keep an analyzed workload visible before starting the separate IAM process.
+        page.locator('#advanced>summary').click();page.select_option('#mode','offline')
+        page.click('#demo');page.click('#submit');page.wait_for_selector('#results',state='visible')
+        workload_rows=page.locator('#rows').inner_text()
+        with patch('migrator.kubernetes.run',side_effect=run),patch('migrator.azure_iam.run_json',side_effect=azure):
+            page.click('#tab-iam')
+            self.assertTrue(page.locator('#workload-panel').is_hidden())
+            page.click('#iam-connect')
+            page.wait_for_function("document.querySelector('#iam-target').options.length===3")
+            page.select_option('#iam-source','source');page.select_option('#iam-target','target')
+            page.fill('#iam-namespaces','demo')
+            page.fill('#iam-azure-source',source_id);page.fill('#iam-azure-target',target_id)
+            page.click('#iam-start')
+            page.wait_for_selector('#iam-progress',state='visible')
+            page.click('#tab-workloads')
+            self.assertTrue(page.locator('#results').is_visible())
+            self.assertEqual(page.locator('#rows').inner_text(),workload_rows)
+            page.click('#tab-iam');gate.set()
+            page.wait_for_selector('#iam-results',state='visible')
+            self.assertIn('Partial inventory',page.locator('#iam-completeness').inner_text())
+            self.assertEqual(page.locator('#iam-results [data-action]').count(),0)
+            page.select_option('#iam-status','UNKNOWN')
+            self.assertIn('read-pods',page.locator('#iam-rows').inner_text())
+            page.locator('#iam-rows button').first.click()
+            self.assertIn('Resolve inventory access',page.locator('#iam-detail-recommendation').inner_text())
+            self.assertIn('Unavailable',page.locator('#iam-detail-target').inner_text())
+            page.select_option('#iam-status','');page.select_option('#iam-provider','Azure')
+            self.assertIn('FederatedCredential',page.locator('#iam-rows').inner_text())
+            self.assertNotIn('ServiceAccount',page.locator('#iam-rows').inner_text())
+            self.assertTrue(page.locator('#iam-detail').is_hidden())
+            with page.expect_download() as download_info:page.click('#iam-download')
+            saved=json.loads(Path(download_info.value.path()).read_text())
+            self.assertFalse(saved['complete']);self.assertTrue(saved['include_azure'])
+            self.assertGreater(saved['summary']['UNKNOWN'],0)
+            self.assertNotIn('PRIVATE-TOKEN',json.dumps(saved))
+            self.assertEqual(saved['azure_source_id'],source_id)
+            page.fill('#iam-namespaces','another')
+            self.assertTrue(page.locator('#iam-stale').is_visible())
+            page.set_viewport_size({'width':390,'height':844})
+            self.assertTrue(page.evaluate('document.documentElement.scrollWidth<=window.innerWidth'))
+            page.screenshot(path='/tmp/iam-inventory-mobile.png',full_page=True)
+            page.set_viewport_size({'width':1500,'height':1100})
+            page.click('#tab-workloads')
+            self.assertEqual(page.locator('#rows').inner_text(),workload_rows)
+            self.assertTrue(all('get' in args or 'get-contexts' in args for args in reads))
+
+    def test_iam_pagination_kubernetes_only_and_keyboard_tabs(self):
+        page = self.page
+        rows = [{'provider':'Kubernetes','kind':'Role','namespace':'demo','name':'role-'+str(i),
+                 'status':'DIFF','source':{'configuration':{'rules':[]}},'target':{'configuration':{'rules':[]}},
+                 'diff_paths':[],'recommendation':'Review target permissions'} for i in range(55)]
+        result = {'resources':rows,'summary':{'MATCH':0,'DIFF':55,'SOURCE_ONLY':0,'TARGET_ONLY':0,'UNKNOWN':0},
+                  'coverage':{'source':[{'kind':'Role','scope':'demo','state':'complete','count':55}],
+                              'target':[{'kind':'Role','scope':'demo','state':'complete','count':55}]},
+                  'complete':True,'source_context':'source','target_context':'target','namespaces':['demo'],
+                  'include_azure':False,'notice':'Read-only inventory'}
+        submitted = []
+        page.route('**/api/contexts',lambda route:route.fulfill(json={'contexts':['source','target']}))
+        def start(route):
+            submitted.append(route.request.post_data_json)
+            route.fulfill(status=202,json={'job_id':'pages'})
+        page.route('**/api/iam/jobs',start)
+        page.route('**/api/iam/jobs/pages',lambda route:route.fulfill(json={'state':'completed','current':'Complete','elapsed_seconds':1,'events':[],'result':result}))
+        page.focus('#tab-workloads');page.keyboard.press('ArrowRight')
+        self.assertTrue(page.locator('#iam-panel').is_visible())
+        page.click('#iam-connect');page.wait_for_function("document.querySelector('#iam-source').options.length===3")
+        page.select_option('#iam-source','source');page.select_option('#iam-target','target')
+        page.uncheck('#iam-azure');page.fill('#iam-namespaces','demo')
+        page.click('#iam-start');page.wait_for_selector('#iam-results',state='visible')
+        self.assertFalse(submitted[0]['include_azure'])
+        self.assertEqual(page.locator('#iam-rows tr').count(),50)
+        page.click('#iam-next');self.assertEqual(page.locator('#iam-rows tr').count(),5)
+        self.assertEqual(page.locator('#iam-page').inner_text(),'Page 2 of 2')
+        page.fill('#iam-search','role-54');self.assertEqual(page.locator('#iam-rows tr').count(),1)
+        with page.expect_download() as info:page.click('#iam-download')
+        self.assertEqual(len(json.loads(Path(info.value.path()).read_text())['resources']),55)
+        page.focus('#tab-iam');page.keyboard.press('Home')
+        self.assertTrue(page.locator('#workload-panel').is_visible())
+        self.assertEqual(page.locator('#src option').count(),1)
+
     def test_comparison_filters_navigation_and_responsive_layout(self):
         page = self.page
         def obj(name, value='1'):
