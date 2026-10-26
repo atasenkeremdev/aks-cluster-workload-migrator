@@ -14,6 +14,7 @@ $('demo').onclick = () => {
 $('planner').onsubmit = async event => {
   event.preventDefault(); $('error').textContent=''; $('results').hidden=true; report=null; analyzedPayload=null; reportScope=null; resultNeedsRefresh=false; $('submit').disabled=true; $('scope-stale').hidden=true;
   try {
+    if(!policyReady)throw Error('Namespace policy is not loaded. Reload the page before comparing.');
     if(!$('src').value||!$('dst').value)throw Error('Select source and target contexts.');
     if($('src').value.trim()===$('dst').value.trim()) throw Error('Source and target must be different.');
     if(Boolean($('old').value.trim())!==Boolean($('new').value.trim())) throw Error('Provide both old and new registry addresses.');
@@ -207,30 +208,32 @@ function canSync(row){return Boolean(analyzedPayload && !scopeStale && row.manif
 
 const protectedNamespaces=new Set(['elastic-agent','kube-system','kube-public','kube-node-lease']);
 let availableNamespaces=[], selectedNamespaces=new Set(), policyExcludedNamespaces=[];
+let staticNamespaces=new Set(), additionalExclusions=new Set(), policyReady=false;
+function isExcluded(name){return protectedNamespaces.has(name)||additionalExclusions.has(name);}
 function setNamespaces(names,selection,policyNames=[]){
   policyExcludedNamespaces=[...new Set([...names,...policyNames].filter(name=>protectedNamespaces.has(name)))].sort();
-  availableNamespaces=[...new Set(names)].filter(name=>!protectedNamespaces.has(name)).sort();
-  selectedNamespaces=new Set((selection??[...selectedNamespaces]).filter(name=>availableNamespaces.includes(name)));
+  availableNamespaces=[...new Set([...names,...policyNames])].sort();
+  selectedNamespaces=new Set((selection??[...selectedNamespaces]).filter(name=>availableNamespaces.includes(name)&&!isExcluded(name)));
   $('namespace-search').value='';renderNamespaces();
 }
 function renderNamespaces(){
   const search=$('namespace-search').value.trim().toLowerCase();
   const visible=availableNamespaces.filter(name=>name.toLowerCase().includes(search));
   $('namespace-list').replaceChildren();
-  for(const name of visible){const label=document.createElement('label'),check=document.createElement('input');check.type='checkbox';check.value=name;check.checked=selectedNamespaces.has(name);check.onchange=()=>{if(check.checked)selectedNamespaces.add(name);else selectedNamespaces.delete(name);updateNamespaceCount();};label.append(check,document.createTextNode(name));$('namespace-list').append(label);}
+  for(const name of visible){const label=document.createElement('label'),check=document.createElement('input');check.type='checkbox';check.value=name;check.checked=selectedNamespaces.has(name);check.disabled=isExcluded(name)||!policyReady;label.title=isExcluded(name)?(staticNamespaces.has(name)?'File policy':protectedNamespaces.has(name)?'System policy':'Additional UI exclusion'):'';check.onchange=()=>{if(check.checked)selectedNamespaces.add(name);else selectedNamespaces.delete(name);updateNamespaceCount();};label.append(check,document.createTextNode(name+(isExcluded(name)?' — '+label.title:'')));$('namespace-list').append(label);}
   $('namespace-empty').hidden=visible.length>0;$('namespace-empty').textContent=availableNamespaces.length?'No namespaces match the search.':$('mode').value==='live'?'Load source namespaces first.':'Load an example or extract namespaces from your JSON manifests.';
   updateNamespaceCount();
 }
 function updateNamespaceCount(){
-  const count=selectedNamespaces.size;
+  const count=selectedNamespaces.size, selectableCount=availableNamespaces.filter(name=>!isExcluded(name)).length;
   $('namespace-summary-text').textContent=count?`${count} namespaces selected`:'Select namespaces';
   $('namespace-count').textContent=`${availableNamespaces.length} namespaces, ${count} selected · maximum 200`;
-  $('namespace-all').checked=availableNamespaces.length>0&&count===availableNamespaces.length;
-  $('namespace-all').indeterminate=count>0&&count<availableNamespaces.length;
-  $('namespace-all').disabled=!availableNamespaces.length;renderNamespaceExclusions();updateOverview();
+  $('namespace-all').checked=selectableCount>0&&count===selectableCount;
+  $('namespace-all').indeterminate=count>0&&count<selectableCount;
+  $('namespace-all').disabled=!policyReady||!selectableCount;renderNamespaceExclusions();updateOverview();
 }
 $('namespace-search').oninput=renderNamespaces;
-$('namespace-all').onchange=()=>{selectedNamespaces=new Set($('namespace-all').checked?availableNamespaces:[]);renderNamespaces();};
+$('namespace-all').onchange=()=>{selectedNamespaces=new Set($('namespace-all').checked?availableNamespaces.filter(name=>!isExcluded(name)):[]);renderNamespaces();};
 $('namespace-clear').onclick=()=>{selectedNamespaces.clear();renderNamespaces();};
 function loadOfflineNamespaces(){
  try{const names=[];for(const id of ['source','target']){if(!$(id).value.trim())continue;const data=JSON.parse($(id).value);const objects=Array.isArray(data)?data:data.kind==='List'?data.items:[data];for(const obj of objects){const name=obj.metadata?.namespace||(obj.kind==='Namespace'?obj.metadata?.name:null);if(name)names.push(name);}}setNamespaces(names);$('error').textContent='';}catch(error){$('error').textContent='Provide valid source and target JSON before loading namespaces.';}
@@ -243,7 +246,7 @@ $('namespace-dropdown').addEventListener('keydown',event=>{if(event.key==='Escap
 renderNamespaces();
 
 function namespaceExclusions(){
-  return [...availableNamespaces.filter(name=>!selectedNamespaces.has(name)).map(name=>({name,reason:'User selection'})),...policyExcludedNamespaces.map(name=>({name,reason:'System policy'}))].sort((a,b)=>a.name.localeCompare(b.name));
+  return [...new Set([...availableNamespaces,...policyExcludedNamespaces,...additionalExclusions])].filter(name=>!selectedNamespaces.has(name)).map(name=>({name,reason:staticNamespaces.has(name)?'File policy':protectedNamespaces.has(name)?'System policy':additionalExclusions.has(name)?'Additional UI exclusion':'User selection'})).sort((a,b)=>a.name.localeCompare(b.name));
 }
 function renderNamespaceExclusions(){
   const excluded=namespaceExclusions();
@@ -318,3 +321,16 @@ function armPreviewExpiry(){
  clearTimeout(previewExpiryTimer);const plan=pendingPlan;
  previewExpiryTimer=setTimeout(()=>{if(pendingPlan!==plan||writeInFlight)return;discardPreview(plan);pendingPlan=null;const error=Error('Preview expired. Refresh validation before confirming.');error.category='resource_version';displayReviewError(error);},Math.max(0,plan.expiresAt-Date.now()));
 }
+
+$('additional-exclusions').oninput=()=>{
+  const names=$('additional-exclusions').value.split(/[\s,]+/).filter(Boolean);
+  if(names.some(name=>name.length>63||!/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(name))){$('additional-exclusions').setCustomValidity('Enter valid exact namespace names.');return;}
+  $('additional-exclusions').setCustomValidity('');additionalExclusions=new Set(names);
+  for(const name of additionalExclusions)selectedNamespaces.delete(name);
+  renderNamespaces();
+};
+fetch('/api/namespace-policy').then(response=>{if(!response.ok)throw Error('Namespace policy could not be loaded. Reload the page.');return response.json();}).then(policy=>{
+  for(const name of policy.protected_namespaces)protectedNamespaces.add(name);
+  staticNamespaces=new Set(policy.static_exclusions);policyReady=true;
+  setNamespaces(availableNamespaces,[...selectedNamespaces],policyExcludedNamespaces);
+}).catch(error=>{$('error').textContent=error.message;});

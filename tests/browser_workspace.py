@@ -110,7 +110,7 @@ class WorkspaceBrowserTests(unittest.TestCase):
         text = page.locator('#namespace-exclusions-list').inner_text()
         self.assertIn('beta — User selection', text)
         self.assertIn('kube-system — System policy', text)
-        self.assertEqual(page.locator('#namespace-list input[value="kube-system"]').count(), 0)
+        self.assertTrue(page.locator('#namespace-list input[value="kube-system"]').is_disabled())
         page.click('#submit')
         page.wait_for_selector('#results', state='visible')
         self.assertEqual(page.locator('#rows tr').count(), 1)
@@ -130,6 +130,37 @@ class WorkspaceBrowserTests(unittest.TestCase):
         self.assertNotIn('beta', page.locator('#namespace-exclusions-list').inner_text())
         page.select_option('#mode', 'live')
         self.assertTrue(page.locator('#namespace-exclusions').is_hidden())
+
+    def test_file_and_additional_exclusions_disable_picker_and_limit_scope(self):
+        page = self.page
+        page.route('**/api/namespace-policy', lambda route: route.fulfill(json={
+            'protected_namespaces':['kube-system','legacy'], 'static_exclusions':['legacy']}))
+        page.reload()
+        page.locator('#advanced>summary').click()
+        page.select_option('#mode', 'offline')
+        page.click('#demo')
+        objects = [{'apiVersion':'v1', 'kind':'ConfigMap',
+                    'metadata':{'name':'settings','namespace':name}, 'data':{'key':'value'}}
+                   for name in ['alpha','beta','legacy','kube-system']]
+        page.fill('#source', json.dumps(objects))
+        page.fill('#target', '[]')
+        page.click('#namespace-from-json')
+        page.click('#namespace-summary')
+        page.check('#namespace-all')
+        self.assertTrue(page.locator('#namespace-list input[value="legacy"]').is_disabled())
+        self.assertTrue(page.locator('#namespace-list input[value="kube-system"]').is_disabled())
+        page.click('#namespace-summary')
+        page.fill('#additional-exclusions', 'beta')
+        self.assertTrue(page.locator('#namespace-list input[value="beta"]').is_disabled())
+        page.click('#submit')
+        page.wait_for_selector('#results', state='visible')
+        self.assertEqual(page.locator('#rows tr').count(), 1)
+        self.assertIn('alpha', page.locator('#rows').inner_text())
+        page.click('#step-scope')
+        page.fill('#additional-exclusions', '')
+        self.assertFalse(page.locator('#namespace-list input[value="beta"]').is_disabled())
+        self.assertFalse(page.locator('#namespace-list input[value="beta"]').is_checked())
+        self.assertEqual(self.errors, [])
 
     def test_namespace_select_all_and_live_waiting_progress(self):
         page = self.page

@@ -28,6 +28,32 @@ Kubeconfig exec plugins run locally; use trusted kubeconfig files only.
 
 On Linux, use `python3` in place of `py -3`. No package installation is needed.
 
+### Namespace exclusion policy
+
+At startup the server reads `excluded-namespaces.txt` from the repository root,
+independently of the current working directory. Use one exact Kubernetes namespace
+name per line; blank lines, duplicate entries and `#` comments are supported.
+Wildcards are not supported. Restart the server after editing the file.
+A missing, unreadable or invalid file prevents startup rather than silently
+allowing migration. Built-in system namespace protections always remain active.
+
+To select a different policy file:
+
+```sh
+python3 -m migrator.server --exclusions-file /path/to/excluded-namespaces.txt --port 8081
+```
+
+File and system policy exclusions appear as disabled entries when present in the
+loaded namespace list. The server rejects excluded namespaces for offline/live
+analysis and sync previews, including direct API requests. They cannot be
+re-enabled in the UI. Add session-specific names in **Additional exclusions**
+(comma or whitespace separated), or uncheck namespaces in the picker. Additional
+UI exclusions disable their picker entries and remove them from the selected
+scope; removing a name makes it selectable again without selecting it automatically.
+These additions last only until the page is reloaded and do not edit the file.
+Changed selections invalidate previous comparisons and require analysis again.
+Select all skips disabled entries. Reports include exclusion names and reasons.
+
 ### Troubleshooting namespace loading (HTTP 502)
 
 **Load cluster contexts** reads the local kubeconfig; success does not confirm
@@ -88,7 +114,7 @@ target, namespace count, action mode, connection and current activity visible.
    Uncheck namespaces to exclude them from comparison and migration actions. The
    overview shows included/excluded counts, and **Excluded namespaces** remains
    visible when the scope panel is collapsed. Expand it to see names and reasons:
-   **User selection** for unchecked namespaces, **System policy** for protected
+   **User selection** for unchecked namespaces, **File policy** for file exclusions and **System policy** for protected
    namespaces returned by the cluster or found in offline JSON. Select an unchecked
    namespace again to include it; protected namespaces cannot be selected. Search
    only filters the picker display and does not change the scope. Changing the

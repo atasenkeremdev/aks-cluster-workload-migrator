@@ -1,5 +1,7 @@
 """Shared migration policy and pure manifest transformations."""
 import copy
+import re
+from pathlib import Path
 
 KINDS = {'Namespace', 'Deployment', 'StatefulSet', 'DaemonSet', 'CronJob',
          'Service', 'ConfigMap', 'Secret', 'ServiceAccount', 'Role', 'RoleBinding',
@@ -7,6 +9,27 @@ KINDS = {'Namespace', 'Deployment', 'StatefulSet', 'DaemonSet', 'CronJob',
          'ActiveMQArtemis'}
 WORKLOAD_KINDS = {'Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'ActiveMQArtemis'}
 PROTECTED = {'elastic-agent', 'kube-system', 'kube-public', 'kube-node-lease'}
+BUILTIN_PROTECTED = frozenset(PROTECTED)
+STATIC_EXCLUSIONS = set()
+DEFAULT_EXCLUSIONS_FILE = Path(__file__).resolve().parent.parent / 'excluded-namespaces.txt'
+
+
+def load_exclusions(path=DEFAULT_EXCLUSIONS_FILE):
+    """Load once before serving requests; invalid or missing files fail closed."""
+    names = set()
+    for number, line in enumerate(Path(path).read_text(encoding='utf-8').splitlines(), 1):
+        name = line.split('#', 1)[0].strip()
+        if not name:
+            continue
+        if len(name) > 63 or not re.fullmatch(r'[a-z0-9](?:[-a-z0-9]*[a-z0-9])?', name):
+            raise ValueError(f'Invalid namespace in exclusion file at line {number}')
+        names.add(name)
+    STATIC_EXCLUSIONS.clear()
+    STATIC_EXCLUSIONS.update(names)
+    PROTECTED.clear()
+    PROTECTED.update(BUILTIN_PROTECTED | names)
+
+
 RUNTIME = ('uid', 'resourceVersion', 'creationTimestamp', 'managedFields', 'generation', 'ownerReferences')
 ANNOTATIONS = ('kubectl.kubernetes.io/last-applied-configuration', 'deployment.kubernetes.io/revision')
 

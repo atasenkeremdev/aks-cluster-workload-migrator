@@ -3,7 +3,7 @@ import json
 import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from .core import analyze
+from .core import analyze, load_exclusions, PROTECTED, STATIC_EXCLUSIONS, DEFAULT_EXCLUSIONS_FILE
 from .kubernetes import ClusterError, contexts, namespaces, live_analyze, sync_plan, sync_execute, operation_health, rollback_plan, rollback_execute, discard_plans
 
 from . import jobs, history
@@ -12,7 +12,9 @@ WEB = Path(__file__).resolve().parent.parent / 'web'
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path.startswith('/api/jobs/'):
+        if self.path == '/api/namespace-policy':
+            self.reply(200, {'protected_namespaces': sorted(PROTECTED), 'static_exclusions': sorted(STATIC_EXCLUSIONS)})
+        elif self.path.startswith('/api/jobs/'):
             try:
                 self.reply(200, jobs.status(self.path.removeprefix('/api/jobs/')))
             except ClusterError as error:
@@ -105,7 +107,12 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=8081)
+    parser.add_argument('--exclusions-file', type=Path, default=DEFAULT_EXCLUSIONS_FILE)
     args = parser.parse_args()
+    try:
+        load_exclusions(args.exclusions_file)
+    except (OSError, ValueError) as error:
+        parser.error(f'Cannot load namespace exclusions: {error}')
     ThreadingHTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
 
 if __name__ == '__main__':

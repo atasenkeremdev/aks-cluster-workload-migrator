@@ -1,0 +1,6 @@
+# One exact namespace per line. Blank lines and # comments are supported.
+# Restart the application after editing this file.
+elastic-agent
+kube-system
+kube-public
+kube-node-lease
