@@ -9,6 +9,13 @@ def evaluate(obj, mode):
                 'detail': 'CronJob suspended' if spec.get('suspend') else 'CronJob enabled; job execution is not verified'}
     if kind not in ('Deployment', 'StatefulSet', 'DaemonSet'):
         return {'state': 'Applied', 'detail': 'API accepted resource; no workload health check for this kind'}
+    if mode == 'source-scale-zero':
+        if spec.get('replicas', 1) != 0:
+            return {'state': 'Drifted', 'detail': 'Source replicas changed after scaling; inspect autoscalers and reconcilers'}
+        observed = status.get('observedGeneration', -1) >= obj.get('metadata', {}).get('generation', 0)
+        stopped = observed and all(status.get(key, 0) == 0 for key in ('replicas', 'readyReplicas', 'availableReplicas'))
+        return {'state': 'ScaledDown' if stopped else 'RollingOut',
+                'detail': 'Source controller reports zero replicas; verify traffic and processing separately' if stopped else 'Waiting for source replicas to terminate'}
     generation = obj.get('metadata', {}).get('generation', 0)
     if status.get('observedGeneration', -1) < generation:
         return {'state': 'RollingOut', 'detail': 'Controller has not observed the current generation'}

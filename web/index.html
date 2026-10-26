@@ -81,12 +81,12 @@
     <p class="muted">Choose an action beside a resource, review its effect, then confirm. Configuration resources sync directly; workloads offer preparation and activation. The source cluster is never stopped automatically.</p>
     <div id="outcome-summary" class="outcome-summary" aria-label="Operation outcome summary"></div>
     <p id="history-status" class="muted" role="status">Refresh history to see operations and readiness checks.</p>
-    <details id="history-details"><summary>Operation history and rollback</summary><div class="table-wrap"><table><thead><tr><th>Time / mode</th><th>Target resource</th><th>Status</th><th>Actions</th></tr></thead><tbody id="history-rows"></tbody></table></div></details>
+    <details id="history-details"><summary>Operation history and rollback</summary><div class="table-wrap"><table><thead><tr><th>Time / mode</th><th>Cluster resource</th><th>Status</th><th>Actions</th></tr></thead><tbody id="history-rows"></tbody></table></div></details>
     <p class="footnote">Applied means API acceptance. Ready means controller readiness, not application health. Secret rollback backups are not stored.</p>
   </section>
 </main>
 <dialog id="sync-dialog" aria-labelledby="confirm-title">
-  <div class="dialog-header"><span class="eyebrow">REVIEW TARGET CHANGE</span><h2 id="confirm-title">Review resource update</h2></div>
+  <div class="dialog-header"><span class="eyebrow">REVIEW CLUSTER CHANGE</span><h2 id="confirm-title">Review resource update</h2></div>
   <p id="sync-description" class="confirm-destination"></p>
   <p id="confirm-impact" class="warning"></p>
   <section id="bulk-review" hidden><p class="muted">Resources are applied sequentially. Execution stops on the first failure; earlier changes are not automatically rolled back.</p><div class="table-wrap bulk-resource-list"><table><thead><tr><th>Resource</th><th>Status</th></tr></thead><tbody id="bulk-review-rows"></tbody></table></div></section><p id="review-status" role="status">Validating target…</p>

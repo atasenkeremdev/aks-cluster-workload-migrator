@@ -135,7 +135,8 @@ target, namespace count, action mode, connection and current activity visible.
    target**. Workloads offer **Prepare target** and **Activate target**; DaemonSet
    and AMQ offer activation only because passive preparation is unsupported.
    Actions appear only for DIFF/SOURCE_ONLY. MATCH and target-only resources
-   never get action buttons. Changing scope invalidates old actions until the
+   never get target sync action buttons. MATCH Deployments and StatefulSets may
+   still offer **Scale source to zero**. Changing scope invalidates old actions until the
    comparison is rerun.
 
 Offline mode is under **Advanced settings** and accepts JSON resources, arrays or
@@ -194,6 +195,42 @@ target identity/configuration checks prevent applying a stale preview. Status-on
 controller changes can refresh resourceVersion; the actual write still uses an
 atomic resourceVersion precondition. Target namespaces
 must already exist. Controller-managed targets cannot be overwritten directly.
+
+### Scale source workloads to zero
+
+After comparing live clusters, choose **Scale source to zero** beside a source
+Deployment or StatefulSet. This action also supports MATCH resources; turn off
+**Differences only** to show them. It is unavailable for offline manifests,
+target-only resources, workloads already requesting zero replicas, excluded
+namespaces, or stale comparisons. CronJobs, DaemonSets and custom resources do
+not use this action.
+
+The review explicitly identifies the **SOURCE** context, namespace and workload.
+It re-reads the source and checks migration exclusions, controller ownership and
+source HPAs, then runs a server-side dry-run. An HPA controlling the workload
+blocks the action. Confirming patches only the source `scale` subresource to
+`spec.replicas: 0`; no target resource is written and no source template or image
+is copied or changed. This requires RBAC read access to the workload and HPAs,
+and patch access to the workload's `scale` subresource. Use a kubectl version
+compatible with the cluster that supports `patch --subresource=scale`.
+
+**This stops source pods and may interrupt traffic or processing.** Verify target
+readiness and coordinate traffic and consumer cutover before confirming. This is
+an explicit action per workload; there is no automatic shutdown after activation
+or bulk source shutdown. A five-minute, single-use preview, source UID/configuration
+checks and an atomic resourceVersion guard block stale writes. HPAs are checked
+again at execution, but another controller or a newly created autoscaler can still
+reactivate the source; coordinate GitOps and autoscaling separately.
+
+Cancellation performs no write. Every attempted write is journaled before the
+request, with its source role and previous replica count. History marks acceptance
+as **Applied**, then **Check readiness** waits for the source controller to observe
+zero replicas and reports **ScaledDown**. This is a controller check, not proof
+that traffic, all terminating pods or external processing have stopped. Source
+operations do not count toward target readiness totals. Conflicts and uncertain
+outcomes require inspection of the source before retrying. Automatic rollback is
+not offered for source scaling; recover manually using the recorded previous
+replica count after reviewing current state. Run comparison again after a write.
 
 ### Bulk actions
 

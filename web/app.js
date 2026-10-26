@@ -51,27 +51,28 @@ $('load-namespaces').onclick=async()=>{const context=$('src').value.trim();$('lo
 
 
 function flat(value,path='',out={}){if(value!==null && typeof value==='object'){const entries=Object.entries(value);if(!entries.length)out[path]=JSON.stringify(value);for(const [key,v] of entries)flat(v,path+'/'+key.replaceAll('~','~0').replaceAll('/','~1'),out);}else out[path]=JSON.stringify(value);return out;}
-function showVersus(row){selectedRow=row;$('versus').hidden=false;$('versus-title').textContent=row.kind+' / '+(row.namespace||'cluster')+' / '+row.name;$('sync-status').textContent='';$('selected-actions').replaceChildren();if(canSync(row))$('selected-actions').append(actionButtons(row));$('action-explanation').textContent=isWorkload(row)?'Prepare without starting replicas, or activate using the source configuration.':'Sync this configuration resource to the selected target.';highlightSelection();$('diff-paths').textContent='Changed fields: '+(row.diff_paths.join(', ')||'None');
+function showVersus(row){selectedRow=row;$('versus').hidden=false;$('versus-title').textContent=row.kind+' / '+(row.namespace||'cluster')+' / '+row.name;$('sync-status').textContent='';$('selected-actions').replaceChildren();if(canSync(row)||canScaleSource(row))$('selected-actions').append(actionButtons(row));$('action-explanation').textContent=isWorkload(row)?'Prepare or activate the target. Deployments and StatefulSets also support an explicit source scale to zero after coordinating cutover.':'Sync this configuration resource to the selected target.';highlightSelection();$('diff-paths').textContent='Changed fields: '+(row.diff_paths.join(', ')||'None');
 const a=row.manifest?flat(row.manifest):{}, b=row.target_manifest?flat(row.target_manifest):{};const paths=[...new Set([...Object.keys(a),...Object.keys(b)])].sort();
 for(const [id,values] of [['source-preview',a],['target-preview',b]]){$(id).replaceChildren();if(!paths.length)$(id).textContent='Resource absent on this side';for(const path of paths){const line=document.createElement('div');line.textContent=path+' = '+(values[path]??'— absent');if(a[path]!==b[path]||row.diff_paths.some(p=>path===p||path.startsWith(p+'/')))line.className='diff-line';$(id).append(line);}}
 }
 function isWorkload(row){return ['Deployment','StatefulSet','DaemonSet','CronJob','ActiveMQArtemis'].includes(row.kind);}
 function actionButtons(row){
  const group=document.createDocumentFragment();
- const actions=isWorkload(row)?(['Deployment','StatefulSet','CronJob'].includes(row.kind)?['prepare','activate']:['activate']):['sync'];
- for(const action of actions){const block=document.createElement('div');block.className='action-choice';const button=document.createElement('button');button.type='button';button.dataset.sync='true';button.dataset.action=action;button.textContent=actionText(action);button.classList.toggle('activate-action',action==='activate');button.onclick=()=>{showVersus(row);openReview(row,action);};block.append(button);const hint=document.createElement('small');hint.textContent=action==='prepare'?(row.kind==='CronJob'?'Suspend scheduled jobs':'Set replicas to zero'):action==='activate'?'May start target workloads':'Copy configuration';block.append(hint);group.append(block);}
+ const actions=canSync(row)?(isWorkload(row)?(['Deployment','StatefulSet','CronJob'].includes(row.kind)?['prepare','activate']:['activate']):['sync']):[];
+ if(canScaleSource(row))actions.push('source-scale-zero');
+ for(const action of actions){const block=document.createElement('div');block.className='action-choice';const button=document.createElement('button');button.type='button';button.dataset.sync='true';button.dataset.action=action;button.textContent=actionText(action);button.classList.toggle('activate-action',['activate','source-scale-zero'].includes(action));button.onclick=()=>{showVersus(row);openReview(row,action);};block.append(button);const hint=document.createElement('small');hint.textContent=action==='source-scale-zero'?'Stops this SOURCE workload':action==='prepare'?(row.kind==='CronJob'?'Suspend scheduled jobs':'Set replicas to zero'):action==='activate'?'May start target workloads':'Copy configuration';block.append(hint);group.append(block);}
  return group;
 }
-function actionText(action){return action==='prepare'?'Prepare target':action==='activate'?'Activate target':'Sync to target';}
+function actionText(action){return action==='source-scale-zero'?'Scale source to zero':action==='prepare'?'Prepare target':action==='activate'?'Activate target':'Sync to target';}
 function openReview(row,action){
- if(writeInFlight||previewInFlight||!canSync(row))return;
+ if(writeInFlight||previewInFlight||!(action==='source-scale-zero'?canScaleSource(row):canSync(row)))return;
  $('bulk-review').hidden=true;$('sync-cancel').textContent='Cancel';
  pendingRollback=false;pendingPlan=null;activeReview={row,action,base:structuredClone(analyzedPayload),scope:scopeFingerprint()};
- $('update-strategy').value='apply';$('strategy-control').hidden=false;$('review-advanced').open=false;$('review-manifest').open=false;
- $('confirm-title').textContent=action==='sync'?'Review configuration sync':action==='prepare'?'Review passive preparation':'Review activation';
- $('sync-confirm').textContent=actionText(action);$('sync-confirm').classList.toggle('activate-action',action==='activate');
- $('sync-description').textContent=row.kind+'/'+row.name+' → '+activeReview.base.target_context+' / '+row.namespace;
- $('confirm-impact').textContent=action==='sync'?syncImpact(row):action==='prepare'?prepareImpact(row):'Apply the source workload configuration and allow it to run on the target. The source stays running; coordinate traffic and duplicate processing.';
+ $('update-strategy').value='apply';$('strategy-control').hidden=action==='source-scale-zero';$('review-advanced').open=false;$('review-manifest').open=false;
+ $('confirm-title').textContent=action==='source-scale-zero'?'Review SOURCE scale to zero':action==='sync'?'Review configuration sync':action==='prepare'?'Review passive preparation':'Review activation';
+ $('sync-confirm').textContent=actionText(action);$('sync-confirm').classList.toggle('activate-action',['activate','source-scale-zero'].includes(action));
+ $('sync-description').textContent=(action==='source-scale-zero'?'SOURCE: ':'TARGET: ')+row.kind+'/'+row.name+' → '+(action==='source-scale-zero'?activeReview.base.source_context:activeReview.base.target_context)+' / '+row.namespace;
+ $('confirm-impact').textContent=action==='source-scale-zero'?'Set this SOURCE workload to zero replicas. This stops its pods and can interrupt traffic or processing. Confirm target readiness and coordinate cutover first. The target is unchanged.':action==='sync'?syncImpact(row):action==='prepare'?prepareImpact(row):'Apply the source workload configuration and allow it to run on the target. The source stays running; coordinate traffic and duplicate processing.';
  $('sync-dialog').showModal();validateReview();
 }
 async function discardPreview(plan){
@@ -84,7 +85,7 @@ async function validateReview(){
  if(!activeReview||writeInFlight)return;
  clearTimeout(previewExpiryTimer);
  const generation=++reviewGeneration,review=activeReview,previous=pendingPlan;
- pendingPlan=null;previewInFlight=true;$('sync-confirm').disabled=true;$('review-conflict').hidden=true;$('preview-guarded').hidden=true;$('retry-preview').hidden=true;$('review-error').textContent='';$('sync-manifest').textContent='';$('sync-warnings').textContent='';$('review-status').textContent='Checking the target and validating this change…';$('overview-activity').textContent='Validating preview…';
+ pendingPlan=null;previewInFlight=true;$('sync-confirm').disabled=true;$('review-conflict').hidden=true;$('preview-guarded').hidden=true;$('retry-preview').hidden=true;$('review-error').textContent='';$('sync-manifest').textContent='';$('sync-warnings').textContent='';$('review-status').textContent=review.action==='source-scale-zero'?'Checking the SOURCE and validating scale to zero…':'Checking the target and validating this change…';$('overview-activity').textContent='Validating preview…';
  const plans=[],rows=review.rows||[review.row];let index=0;if(review.bulk)rows.forEach((row,i)=>setBulkState(i,'Pending validation'));
  try{
   await discardPreview(previous);
@@ -93,14 +94,16 @@ async function validateReview(){
   for(index=0;index<rows.length;index++){
    if(generation!==reviewGeneration||!$('sync-dialog').open)break;
    const row=rows[index];if(review.bulk){setBulkState(index,'Validating…');$('review-status').textContent=`Validating ${index+1} of ${rows.length}: ${row.kind}/${row.name}`;}
-   const plan=await clusterRequest('/api/sync/plan',{...review.base,namespace:row.namespace,name:row.name,kind:row.kind,apiVersion:row.apiVersion,mode:review.action,strategy:$('update-strategy').value});
+   const plan=await clusterRequest(review.action==='source-scale-zero'?'/api/source/scale/plan':'/api/sync/plan',{...review.base,namespace:row.namespace,name:row.name,kind:row.kind,apiVersion:row.apiVersion,mode:review.action,strategy:$('update-strategy').value});
    plan.expiresAt=Date.now()+(plan.expires_in||300)*1000;plans.push({row,plan});if(generation!==reviewGeneration||!$('sync-dialog').open)break;if(review.bulk)setBulkState(index,'Validated');
   }
   if(generation!==reviewGeneration||!$('sync-dialog').open){await discardPreview({bulk:true,plans});return;}
+  if(scopeFingerprint()!==review.scope)throw Error('Scope changed. Close this review and run analysis again.');
   const expiresAt=Math.min(...plans.map(item=>item.plan.expiresAt));
   if(expiresAt<=Date.now())throw Error('Validation took longer than the preview lifetime. Narrow the result filters and try again.');
   pendingPlan=review.bulk?{bulk:true,plans,expiresAt}:plans[0].plan;armPreviewExpiry();
   $('sync-manifest').textContent=JSON.stringify(review.bulk?plans.map(item=>item.plan.manifest):plans[0].plan.manifest,null,2);
+  if(review.action==='source-scale-zero')$('confirm-impact').textContent=`Set SOURCE ${review.row.kind}/${review.row.name} from ${plans[0].plan.previous_replicas} to 0 replicas. This stops its pods and can interrupt traffic or processing. Confirm target readiness and coordinate cutover first.`;
   $('sync-warnings').textContent=[...new Set(plans.flatMap(item=>[item.plan.update_effect,...(item.plan.warnings||[])].filter(Boolean)))].join(' ');
   $('review-status').textContent=review.bulk?`All ${rows.length} resources passed validation. Confirm to apply sequentially; previews expire in 5 minutes.`:'Validation passed. Review the effect above, then confirm. Preview expires in 5 minutes.';$('sync-confirm').disabled=false;$('overview-activity').textContent='Awaiting confirmation';
  }catch(error){
@@ -118,8 +121,8 @@ function displayReviewError(error,afterWrite=false){
  const managers=error.message.match(/Field manager\(s\): (.*?)\. Nothing/);
  $('conflict-summary').textContent=error.category==='field_ownership'?(managers?'Target fields are managed by '+managers[1]+'. Review a guarded update?':'Another manager owns target fields. Review a guarded update?'):error.message;
  const rejected=['field_ownership','resource_version'].includes(error.category);
- $('conflict-note').textContent=afterWrite&&!rejected?'Inspect the target and operation history before retrying; the write outcome may be uncertain.':'No changes have been applied.';
- $('preview-guarded').hidden=error.category!=='field_ownership'||!activeReview;$('preview-guarded').textContent=activeReview?.bulk?'Review guarded updates for all '+activeReview.rows.length+' resources':'Review guarded update';
+ $('conflict-note').textContent=afterWrite&&!rejected?'Inspect the affected cluster and operation history before retrying; the write outcome may be uncertain.':'No changes have been applied.';
+ $('preview-guarded').hidden=error.category!=='field_ownership'||!activeReview||activeReview.action==='source-scale-zero';$('preview-guarded').textContent=activeReview?.bulk?'Review guarded updates for all '+activeReview.rows.length+' resources':'Review guarded update';
  $('retry-preview').hidden=error.category!=='resource_version'||!activeReview;
  $('overview-activity').textContent='Review needed';$('sync-confirm').disabled=true;
 }
@@ -128,13 +131,15 @@ $('sync-confirm').onclick=async()=>{
  if(!pendingPlan||writeInFlight)return;
  clearTimeout(previewExpiryTimer);
  if(pendingPlan.bulk){await executeBulk();return;}
- writeInFlight=true;$('update-strategy').disabled=true;$('overview-activity').textContent=pendingRollback?'Rolling back…':'Applying to target…';$('sync-confirm').disabled=true;$('sync-cancel').disabled=true;
+ if(activeReview&&scopeFingerprint()!==activeReview.scope){await discardPreview(pendingPlan);pendingPlan=null;displayReviewError(Error('Scope changed. Close this review and run analysis again.'));return;}
+ const sourceScale=pendingPlan.mode==='source-scale-zero';
+ writeInFlight=true;$('update-strategy').disabled=true;$('overview-activity').textContent=pendingRollback?'Rolling back…':sourceScale?'Scaling SOURCE to zero…':'Applying to target…';$('sync-confirm').disabled=true;$('sync-cancel').disabled=true;
  try{
-  const result=await clusterRequest(pendingRollback?'/api/rollback/execute':'/api/sync/execute',{token:pendingPlan.token,confirm:true});
+  const result=await clusterRequest(pendingRollback?'/api/rollback/execute':sourceScale?'/api/source/scale/execute':'/api/sync/execute',{token:pendingPlan.token,confirm:true});
   pendingPlan=null;activeReview=null;resultNeedsRefresh=true;updateOverview();$('sync-dialog').close();$('overview-activity').textContent=result.status;$('sync-status').textContent=result.status+' · Run analysis again to refresh the comparison.';
   await loadHistory();if(result.status==='Applied')trackReadiness(result.operation_id);
  }catch(error){
-  pendingPlan=null;if(!['field_ownership','resource_version'].includes(error.category))activeReview=null;
+  resultNeedsRefresh=true;updateOverview();pendingPlan=null;if(!['field_ownership','resource_version'].includes(error.category))activeReview=null;
   displayReviewError(error,true);$('sync-status').textContent=error.message;await loadHistory();
  }finally{writeInFlight=false;$('update-strategy').disabled=false;$('sync-confirm').disabled=!pendingPlan;$('sync-cancel').disabled=false;updateActionLabels();}
 };
@@ -183,7 +188,7 @@ function renderResources(){
     for(const side of ['source','target']){
       const td=document.createElement('td'),manifest=side==='source'?row.manifest:row.target_manifest;
       if(manifest){const name=document.createElement('button');name.type='button';name.className='resource-name';name.textContent=row.name;name.onclick=()=>{showVersus(row);$('versus').scrollIntoView({block:'start'});};td.append(name);const meta=document.createElement('div');meta.className='resource-meta';meta.textContent=row.kind+' · '+(row.namespace||'cluster');td.append(meta);
-        if(side==='source'&&canSync(row)){const actions=document.createElement('div');actions.className='row-actions';actions.append(actionButtons(row));td.append(actions);}
+        if(side==='source'&&(canSync(row)||canScaleSource(row))){const actions=document.createElement('div');actions.className='row-actions';actions.append(actionButtons(row));td.append(actions);}
       }else{const absent=document.createElement('span');absent.className='resource-absent';absent.textContent='Absent on this side';td.append(absent);const meta=document.createElement('div');meta.className='resource-meta';meta.textContent=row.kind+' · '+(row.namespace||'cluster');td.append(meta);}
       tr.append(td);
     }
@@ -198,11 +203,13 @@ $('filter-status').addEventListener('change',()=>{if($('filter-status').value===
 $('clear-filters').onclick=()=>{for(const id of ['filter-namespace','filter-kind','filter-status'])$(id).value='';$('resource-search').value='';$('differences-only').checked=true;renderResources();};
 
 async function loadHistory(){
- try{const data=await clusterRequest('/api/history');$('history-rows').replaceChildren();for(const op of data.operations){const tr=document.createElement('tr');for(const text of [new Date(op.updated_at).toLocaleString()+' / '+op.mode,op.target+' / '+op.namespace+' / '+op.kind+'/'+op.name,op.status+(op.health?' · '+op.health.state+' — '+op.health.detail:'')]){const td=document.createElement('td');td.textContent=text;tr.append(td);}const actions=document.createElement('td');if(op.applied_uid&&op.status!=='RolledBack'){const health=document.createElement('button');health.textContent='Check readiness';health.onclick=async()=>{health.disabled=true;try{const result=await clusterRequest('/api/operations/health',{operation_id:op.id});$('history-status').textContent=result.state+' — '+result.detail;await loadHistory();}catch(error){$('history-status').textContent=error.message;}finally{health.disabled=false;}};actions.append(health);}if(op.rollback_available){const rollback=document.createElement('button');rollback.textContent='Preview rollback';rollback.onclick=()=>prepareRollback(op.id);actions.append(rollback);}tr.append(actions);$('history-rows').append(tr);}renderOutcomes(data.operations);$('history-status').textContent=data.operations.length+' recent operations loaded. These are recorded checks; refresh readiness for current state.';}catch(error){$('history-status').textContent=error.message;}
+ try{const data=await clusterRequest('/api/history');$('history-rows').replaceChildren();for(const op of data.operations){const tr=document.createElement('tr');for(const text of [new Date(op.updated_at).toLocaleString()+' / '+op.mode+(op.cluster_role==='source'?' · replicas '+op.previous_replicas+' → 0':''),(op.cluster_role==='source'?'SOURCE: ':'TARGET: ')+op.target+' / '+op.namespace+' / '+op.kind+'/'+op.name,op.status+(op.health?' · '+op.health.state+' — '+op.health.detail:'')]){const td=document.createElement('td');td.textContent=text;tr.append(td);}const actions=document.createElement('td');if(op.applied_uid&&op.status!=='RolledBack'){const health=document.createElement('button');health.textContent='Check readiness';health.onclick=async()=>{health.disabled=true;try{const result=await clusterRequest('/api/operations/health',{operation_id:op.id});$('history-status').textContent=result.state+' — '+result.detail;await loadHistory();}catch(error){$('history-status').textContent=error.message;}finally{health.disabled=false;}};actions.append(health);}if(op.rollback_available){const rollback=document.createElement('button');rollback.textContent='Preview rollback';rollback.onclick=()=>prepareRollback(op.id);actions.append(rollback);}tr.append(actions);$('history-rows').append(tr);}renderOutcomes(data.operations);$('history-status').textContent=data.operations.length+' recent operations loaded. These are recorded checks; refresh readiness for current state.';}catch(error){$('history-status').textContent=error.message;}
 }
 $('load-history').onclick=loadHistory;
 async function prepareRollback(id){if(writeInFlight||previewInFlight)return;previewInFlight=true;$('bulk-review').hidden=true;$('sync-cancel').textContent='Cancel';activeReview=null;reviewGeneration++;$('strategy-control').hidden=true;$('review-advanced').open=false;$('review-manifest').open=false;$('review-conflict').hidden=true;$('review-error').textContent='';$('review-status').textContent='Review this rollback before confirming.';$('overview-activity').textContent='Preparing rollback preview…';setStep('execute');try{pendingPlan=await clusterRequest('/api/rollback/plan',{operation_id:id});pendingRollback=true;$('confirm-title').textContent='Confirm rollback';$('confirm-impact').textContent=pendingPlan.operation==='restore'?'The pre-sync target configuration will be restored. This may change a running workload.':'The target resource created by this sync will be deleted. Data and external effects are not restored.';$('sync-confirm').classList.add('activate-action');$('sync-confirm').textContent='Confirm rollback';$('sync-description').textContent=pendingPlan.operation+' '+pendingPlan.kind+'/'+pendingPlan.name+' → '+pendingPlan.target_context+' / '+pendingPlan.namespace;$('sync-manifest').textContent=pendingPlan.manifest?JSON.stringify(pendingPlan.manifest,null,2):'Delete the resource created by this sync (UID and resourceVersion preconditions).';$('sync-warnings').textContent=pendingPlan.warning;$('sync-confirm').disabled=false;$('sync-dialog').showModal();}catch(error){$('history-status').textContent=error.message;}finally{previewInFlight=false;}}
 async function trackReadiness(id){for(let attempt=0;attempt<12;attempt++){try{const result=await clusterRequest('/api/operations/health',{operation_id:id});$('overview-activity').textContent=result.state;$('sync-status').textContent=result.state+' — '+result.detail;await loadHistory();if(result.state!=='RollingOut')return;}catch(error){$('sync-status').textContent='Applied; readiness check failed: '+error.message;return;}await new Promise(resolve=>setTimeout(resolve,5000));}$('sync-status').textContent='Still rolling out. Use Check readiness in operation history to continue monitoring.';}
+
+function canScaleSource(row){return Boolean(analyzedPayload&&!scopeStale&&row.manifest&&['Deployment','StatefulSet'].includes(row.kind)&&row.apiVersion==='apps/v1'&&(row.manifest.spec?.replicas??1)>0);}
 
 function canSync(row){return Boolean(analyzedPayload && !scopeStale && row.manifest && row.kind!=='Namespace' && ['DIFF','SOURCE_ONLY'].includes(row.status));}
 
@@ -272,7 +279,7 @@ $('close-versus').onclick=()=>{$('versus').hidden=true;selectedRow=null;highligh
 for(const id of ['src','dst','old','new','source','target'])$(id).addEventListener('change',()=>{if(id==='src'||id==='dst')connectionState='Connection not verified';updateOverview();});
 function renderOutcomes(operations){
  const counts={prepared:0,ready:0,failed:0,pending:0},seen=new Set();
- for(const op of operations||[]){const key=JSON.stringify([op.target,op.namespace,op.kind,op.name]);if(seen.has(key))continue;seen.add(key);const state=op.health?.state;if(op.status==='RolledBack'||state==='Deleted')continue;if(['Unknown','RollbackUnknown','Conflict'].includes(op.status)||state==='Failed'||state==='Drifted')counts.failed++;else if(state==='Prepared')counts.prepared++;else if(state==='Ready')counts.ready++;else counts.pending++;}
+ for(const op of operations||[]){if(op.cluster_role==='source')continue;const key=JSON.stringify([op.target,op.namespace,op.kind,op.name]);if(seen.has(key))continue;seen.add(key);const state=op.health?.state;if(op.status==='RolledBack'||state==='Deleted')continue;if(['Unknown','RollbackUnknown','Conflict'].includes(op.status)||state==='Failed'||state==='Drifted')counts.failed++;else if(state==='Prepared')counts.prepared++;else if(state==='Ready')counts.ready++;else counts.pending++;}
  $('outcome-summary').replaceChildren();for(const [key,label] of [['prepared','Prepared'],['ready','Controller ready'],['failed','Failed / review'],['pending','Pending checks']]){const box=document.createElement('div');box.className='outcome-item';const n=document.createElement('strong');n.textContent=operations?counts[key]:'—';box.append(n,document.createTextNode(label));$('outcome-summary').append(box);}
 }
 $('sync-dialog').addEventListener('cancel',event=>{if(writeInFlight)event.preventDefault();else cancelReview();});

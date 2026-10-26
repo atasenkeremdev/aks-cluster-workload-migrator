@@ -4,7 +4,7 @@ import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from .core import analyze, load_exclusions, PROTECTED, STATIC_EXCLUSIONS, DEFAULT_EXCLUSIONS_FILE
-from .kubernetes import ClusterError, contexts, namespaces, live_analyze, sync_plan, sync_execute, operation_health, rollback_plan, rollback_execute, discard_plans
+from .kubernetes import ClusterError, contexts, namespaces, live_analyze, sync_plan, sync_execute, operation_health, rollback_plan, rollback_execute, discard_plans, source_scale_plan, source_scale_execute
 
 from . import jobs, history
 
@@ -61,7 +61,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get_content_type() != 'application/json':
             self.reply(415, {'error': 'Content-Type must be application/json.'})
             return
-        if self.path not in ('/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute', '/api/live/jobs', '/api/operations/health', '/api/rollback/plan', '/api/rollback/execute', '/api/sync/discard'):
+        if self.path not in ('/api/source/scale/plan', '/api/source/scale/execute', '/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute', '/api/live/jobs', '/api/operations/health', '/api/rollback/plan', '/api/rollback/execute', '/api/sync/discard'):
             self.reply(404, {'error': 'Not found'})
             return
         try:
@@ -81,6 +81,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = rollback_execute(body)
             elif self.path == '/api/sync/discard':
                 result = discard_plans(body)
+            elif self.path == '/api/source/scale/plan':
+                result = source_scale_plan(body)
+            elif self.path == '/api/source/scale/execute':
+                result = source_scale_execute(body)
             elif self.path == '/api/sync/plan':
                 result = sync_plan(body)
             elif self.path == '/api/sync/execute':

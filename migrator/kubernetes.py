@@ -307,6 +307,97 @@ def sync_plan(body):
             'expires_in': 300}
 
 
+def source_scale_resource(body):
+    """Validate the source identity before any cluster access."""
+    source, target = body['source_context'], body['target_context']
+    ns, name, kind = body['namespace'], body['name'], body['kind']
+    validate_selection(source, target, [ns])
+    if kind not in ('Deployment', 'StatefulSet') or body.get('apiVersion') != 'apps/v1':
+        raise ValueError('Source scale to zero supports apps/v1 Deployments and StatefulSets only')
+    if not isinstance(name, str) or len(name) > 253 or not re.fullmatch(r'[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?', name):
+        raise ValueError('Select a valid source resource name')
+    return source, ns, name, kind, kind + '.apps'
+
+
+def check_source_scale(obj, ns, name, kind, args):
+    meta = obj['metadata']
+    if (reason(obj) or meta.get('namespace') != ns or meta.get('name') != name or
+            obj.get('kind') != kind or obj.get('apiVersion') != 'apps/v1'):
+        raise ValueError('Source resource is excluded or does not match the selected workload')
+    if not meta.get('uid') or not meta.get('resourceVersion'):
+        raise ValueError('Source resource identity is unavailable')
+    hpas = read_json([*args, '-n', ns, 'get', 'horizontalpodautoscalers', '-o', 'json'])
+    if any(hpa.get('spec', {}).get('scaleTargetRef', {}).get('name') == name and
+           hpa.get('spec', {}).get('scaleTargetRef', {}).get('kind') == kind
+           for hpa in hpas.get('items', [])):
+        raise ValueError('A source HPA controls this workload. Resolve the HPA before scaling to zero.')
+
+
+def source_scale_plan(body):
+    source, ns, name, kind, resource = source_scale_resource(body)
+    args = context_args(source)
+    obj = read_json([*args, '-n', ns, 'get', resource, name, '-o', 'json'])
+    check_source_scale(obj, ns, name, kind, args)
+    replicas = obj.get('spec', {}).get('replicas', 1)
+    if replicas == 0:
+        raise ValueError('Source workload already requests zero replicas')
+    manifest = {'metadata': {'uid': obj['metadata']['uid'], 'resourceVersion': obj['metadata']['resourceVersion']},
+                'spec': {'replicas': 0}}
+    action = ['patch', resource, name, '--subresource=scale', '--type=merge', '--field-manager=aks-migrator']
+    run([*args, '-n', ns, *action, '--dry-run=server', '--patch-file=-', '-o', 'json'], manifest)
+    token = secrets.token_urlsafe(32)
+    with _LOCK:
+        for key in list(_PLANS):
+            if _PLANS[key]['expires'] < time.monotonic():
+                del _PLANS[key]
+        if len(_PLANS) >= 100:
+            raise ClusterError('Too many pending previews. Try again later.', 429)
+        _PLANS[token] = dict(source_scale=True, source=source, namespace=ns, name=name, kind=kind,
+                             resource=resource, manifest=manifest, action=action,
+                             fingerprint=fingerprint(obj), replicas=replicas, expires=time.monotonic()+300)
+    return {'token': token, 'source_context': source, 'namespace': ns, 'name': name, 'kind': kind,
+            'mode': 'source-scale-zero', 'manifest': manifest, 'previous_replicas': replicas, 'expires_in': 300,
+            'warnings': ['This stops the selected SOURCE workload and can interrupt traffic or processing.',
+                         'Coordinate target readiness and traffic cutover before confirming. GitOps or other reconcilers may scale it up again.',
+                         'Only the source scale subresource is changed. No automatic rollback is offered; the previous replica count is recorded in history.']}
+
+
+def source_scale_execute(body):
+    if body.get('confirm') is not True:
+        raise ValueError('Explicit source scale confirmation is required')
+    with _LOCK:
+        plan = _PLANS.pop(body.get('token', ''), None)
+    if not plan or not plan.get('source_scale') or plan['expires'] < time.monotonic():
+        raise ValueError('Source scale preview expired or already used. Preview again.')
+    args = context_args(plan['source'])
+    obj = read_json([*args, '-n', plan['namespace'], 'get', plan['resource'], plan['name'], '-o', 'json'])
+    check_source_scale(obj, plan['namespace'], plan['name'], plan['kind'], args)
+    if obj['metadata']['uid'] != plan['manifest']['metadata']['uid'] or fingerprint(obj) != plan['fingerprint']:
+        raise ClusterError('Source configuration changed after preview. Analyze and preview again.', 409, 'resource_version')
+    # Status-only updates are allowed; the scale write still has an atomic version guard.
+    manifest = {**plan['manifest'], 'metadata': {**plan['manifest']['metadata'], 'resourceVersion': obj['metadata']['resourceVersion']}}
+    record = history.save({'source': plan['source'], 'target': plan['source'], 'cluster_role': 'source',
+                           'namespace': plan['namespace'], 'resource': plan['resource'], 'name': plan['name'],
+                           'kind': plan['kind'], 'mode': 'source-scale-zero', 'previous_replicas': plan['replicas'],
+                           'rollback_available': False, 'status': 'Applying'})
+    try:
+        scaled = json.loads(run([*args, '-n', plan['namespace'], *plan['action'], '--patch-file=-', '-o', 'json'], manifest))
+        if scaled['metadata']['uid'] != obj['metadata']['uid'] or scaled['spec']['replicas'] != 0:
+            raise ValueError('Unexpected scale response')
+        history.save({**record, 'status': 'Applied', 'applied_uid': scaled['metadata']['uid'],
+                      'applied_version': scaled['metadata']['resourceVersion']})
+    except Exception as error:
+        conflict = isinstance(error, ClusterError) and error.category in ('field_ownership', 'resource_version')
+        try:
+            history.save({**record, 'status': 'Conflict' if conflict else 'Unknown'})
+        except Exception:
+            pass  # The durable Applying record still indicates a potentially submitted write.
+        if conflict:
+            raise ClusterError('Source scale conflicted with another update. Inspect the source and preview again.', 409, 'resource_version') from None
+        raise ClusterError('Source scale outcome is uncertain. Inspect the SOURCE cluster and operation history before retrying.') from None
+    return {'status': 'Applied', 'operation_id': record['id'], 'mode': 'source-scale-zero', 'source_context': plan['source']}
+
+
 def fingerprint(obj):
     return hashlib.sha256(json.dumps(normalize(obj, transform=False), sort_keys=True).encode()).hexdigest()
 
@@ -316,7 +407,7 @@ def sync_execute(body):
         raise ValueError('Explicit confirmation is required')
     with _LOCK:
         plan = _PLANS.pop(body.get('token', ''), None)
-    if not plan or plan.get('rollback') or plan['expires'] < time.monotonic():
+    if not plan or plan.get('rollback') or plan.get('source_scale') or plan['expires'] < time.monotonic():
         raise ValueError('Sync preview expired or already used. Preview again.')
     args = context_args(plan['target'])
     raw = run([*args, '-n', plan['namespace'], 'get', plan['resource'], plan['name'], '--ignore-not-found', '-o', 'json'])
@@ -383,7 +474,9 @@ def operation_health(body):
         obj = read_json(command)
         if obj['metadata'].get('uid') != record.get('applied_uid'):
             raise ClusterError('Resource identity changed after this operation.', 409)
-        if record.get('status') == 'Applied' and fingerprint(obj) != record.get('applied_fingerprint'):
+        if record.get('mode') == 'source-scale-zero':
+            health = evaluate(obj, 'source-scale-zero')
+        elif record.get('status') == 'Applied' and fingerprint(obj) != record.get('applied_fingerprint'):
             health = {'state': 'Drifted', 'detail': 'Target configuration changed after this operation; review the comparison'}
         else:
             health = evaluate(obj, record['mode'])

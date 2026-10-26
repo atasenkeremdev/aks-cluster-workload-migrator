@@ -305,6 +305,81 @@ class WorkspaceBrowserTests(unittest.TestCase):
         self.assertEqual(page.locator('#bulk-review-rows').inner_text().count('Applied'),2)
         self.assertTrue(page.locator('#sync-confirm').is_disabled())
 
+    def test_source_scale_preview_cancel_confirm_and_stale_scope(self):
+        page = self.page
+        source = {'apiVersion':'apps/v1','kind':'Deployment',
+                  'metadata':{'name':'worker','namespace':'demo','uid':'source-uid','resourceVersion':'1','generation':1},
+                  'spec':{'replicas':2,'template':{'spec':{'containers':[{'name':'worker','image':'example/worker:1'}]}}}}
+        state = {'source':copy.deepcopy(source), 'writes':[]}
+        target = copy.deepcopy(source)
+        target['metadata']['uid'] = 'target-uid'
+        def run(args, payload=None):
+            if 'get-contexts' in args:
+                return 'source\ntarget\n'
+            context = args[args.index('--context')+1]
+            if 'api-resources' in args:
+                return 'deployments deploy apps/v1 true Deployment get,list\n'
+            if 'patch' in args:
+                self.assertEqual(context, 'source')
+                self.assertIn('--subresource=scale', args)
+                if '--dry-run=server' not in args:
+                    state['writes'].append(copy.deepcopy(payload))
+                    state['source']['spec']['replicas'] = 0
+                    state['source']['metadata'].update(resourceVersion='2', generation=2)
+                    state['source']['status'] = {'observedGeneration':2,'replicas':0}
+                return json.dumps({'apiVersion':'autoscaling/v1','kind':'Scale',
+                                   'metadata':state['source']['metadata'], 'spec':{'replicas':0}})
+            kind = args[args.index('get')+1]
+            if kind == 'namespaces':
+                return json.dumps({'items':[{'apiVersion':'v1','kind':'Namespace','metadata':{'name':'demo'}}]})
+            if kind == 'horizontalpodautoscalers':
+                self.assertEqual(context, 'source')
+                return '{"items":[]}'
+            current = state['source'] if context == 'source' else target
+            return json.dumps(current if 'worker' in args else {'items':[current]})
+        with patch('migrator.kubernetes.run', side_effect=run):
+            page.click('#connect')
+            page.wait_for_function("document.querySelector('#src').options.length===3")
+            page.select_option('#src','source');page.select_option('#dst','target')
+            page.click('#load-namespaces')
+            page.wait_for_function("document.querySelector('#namespace-list input')!==null")
+            page.click('#namespace-summary');page.check('#namespace-all');page.click('#namespace-summary')
+            page.click('#submit');page.wait_for_selector('#results',state='visible')
+            # Identical source and target workloads may still need source shutdown.
+            page.uncheck('#differences-only')
+            scale = page.locator('#rows [data-action="source-scale-zero"]')
+            self.assertEqual(scale.count(), 1)
+            self.assertEqual(page.locator('#rows [data-action="activate"]').count(), 0)
+            scale.click()
+            page.wait_for_function("!document.querySelector('#sync-confirm').disabled")
+            self.assertIn('SOURCE:',page.locator('#sync-description').inner_text())
+            self.assertIn('source / demo',page.locator('#sync-description').inner_text())
+            self.assertTrue(page.locator('#strategy-control').is_hidden())
+            self.assertEqual(state['writes'], [])
+            page.click('#sync-cancel')
+            self.assertEqual(state['writes'], [])
+            scale.click();page.wait_for_function("!document.querySelector('#sync-confirm').disabled")
+            # A programmatic scope change models configuration changing while a review is open.
+            page.evaluate("document.querySelector('#old').value='old.registry';document.querySelector('#new').value='new.registry'")
+            page.click('#sync-confirm')
+            page.wait_for_function("document.querySelector('#review-error').textContent.includes('Scope changed')")
+            self.assertIn('Scope changed', page.locator('#conflict-summary').inner_text())
+            self.assertEqual(state['writes'], [])
+            page.click('#sync-cancel')
+            page.click('#step-scope');page.click('#submit')
+            page.wait_for_selector('#results',state='visible');page.uncheck('#differences-only')
+            page.locator('#rows [data-action="source-scale-zero"]').click()
+            page.wait_for_function("!document.querySelector('#sync-confirm').disabled")
+            page.click('#sync-confirm');page.wait_for_selector('#sync-dialog',state='hidden')
+            page.wait_for_function("document.querySelector('#history-rows').textContent.includes('ScaledDown')")
+            self.assertEqual(len(state['writes']), 1)
+            self.assertEqual(state['source']['spec']['replicas'], 0)
+            self.assertEqual(target['spec']['replicas'], 2)
+            page.locator('#history-details > summary').click()
+            self.assertIn('SOURCE: source',page.locator('#history-rows').inner_text())
+            self.assertIn('replicas 2 → 0',page.locator('#history-rows').inner_text())
+            self.assertEqual(page.locator('#rows [data-action="source-scale-zero"]').count(), 0)
+
     def test_live_prepare_activate_and_rollback(self):
         page = self.page
         namespace = {'apiVersion':'v1','kind':'Namespace','metadata':{'name':'demo'}}
