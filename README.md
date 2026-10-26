@@ -273,9 +273,12 @@ the same server-side policy, HPA and dry-run checks as individual scaling before
 confirmation is enabled. Cancelling, expiry or a validation failure performs no
 writes and discards collected previews. No target resource is written.
 
-On confirmation, scaling runs sequentially and stops at the first failure.
-**The batch is not atomic:** earlier successful scale requests remain applied;
-later items are marked **Not processed**. Each attempted write uses the individual
+On confirmation, scaling runs sequentially and **continues to later workloads
+after errors or uncertain outcomes**. Each row retains its result. The final
+summary separates confirmed API acceptance from workloads that require review;
+an uncertain outcome is never counted as applied and is not retried automatically.
+**The batch is not atomic:** successful scale requests remain applied.
+Each attempted write uses the individual
 source identity/configuration guards and durable operation history. Inspect the
 source and history after a failure or browser interruption. API acceptance does
 not prove shutdown; use **Check readiness** in history and run comparison again.

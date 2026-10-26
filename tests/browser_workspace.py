@@ -305,7 +305,7 @@ class WorkspaceBrowserTests(unittest.TestCase):
         self.assertEqual(page.locator('#bulk-review-rows').inner_text().count('Applied'),2)
         self.assertTrue(page.locator('#sync-confirm').is_disabled())
 
-    def test_bulk_source_scale_filters_validation_cancel_partial_failure_and_success(self):
+    def test_bulk_source_scale_filters_validation_cancel_continue_after_errors_and_success(self):
         page = self.page
         def workload(name, kind='Deployment', replicas=3):
             return {'apiVersion':'apps/v1','kind':kind,'metadata':{'name':name,'namespace':'demo'},
@@ -337,7 +337,9 @@ class WorkspaceBrowserTests(unittest.TestCase):
             body = tokens[route.request.post_data_json['token']]
             self.assertTrue(route.request.post_data_json['confirm'])
             state['writes'].append(body)
-            if state['fail_write'] and body['name']=='b':
+            if state['fail_write']=='first-unknown' and body['name']=='a':
+                route.fulfill(status=502,json={'error':'Source scale outcome is uncertain. Inspect the SOURCE cluster.'});return
+            if state['fail_write'] is True and body['name']=='b':
                 route.fulfill(status=409,json={'error':'Source changed after preview.','category':'resource_version'});return
             route.fulfill(json={'status':'Applied','operation_id':body['name']})
         def discard(route):
@@ -382,20 +384,33 @@ class WorkspaceBrowserTests(unittest.TestCase):
         self.assertEqual(page.locator('#bulk-review-rows').inner_text().count('3 → 0 replicas'),3)
         self.assertTrue(page.locator('#strategy-control').is_hidden())
         page.click('#sync-cancel');self.assertEqual(state['writes'],[])
-        # The second write fails: retain the first, do not process the third.
+        # A conflict on the second resource must not stop the third.
         state['fail_write'] = True
         button.click();page.wait_for_function("!document.querySelector('#sync-confirm').disabled")
         page.click('#sync-confirm')
-        page.wait_for_function("document.querySelector('#review-status').textContent.includes('Stopped after 1 of 3')")
-        self.assertEqual([body['name'] for body in state['writes']],['a','b'])
-        self.assertIn('Not processed',page.locator('#bulk-review-rows').inner_text())
+        page.wait_for_function("document.querySelector('#review-status').textContent.includes('Finished: 2 applied, 1 require review')")
+        self.assertEqual([body['name'] for body in state['writes']],['a','b','c'])
+        self.assertIn('Needs review: Source changed',page.locator('#bulk-review-rows').inner_text())
+        self.assertNotIn('Not processed',page.locator('#bulk-review-rows').inner_text())
+        self.assertEqual(page.locator('#bulk-review-rows').inner_text().count('Applied · check readiness'),2)
         page.click('#sync-cancel');self.assertTrue(button.is_hidden())
+        # An uncertain FIRST outcome also leaves both subsequent resources eligible.
+        state['fail_write'] = 'first-unknown';state['writes'].clear()
+        page.click('#step-scope');page.click('#submit');page.wait_for_selector('#results',state='visible')
+        button.click();page.wait_for_function("!document.querySelector('#sync-confirm').disabled")
+        self.assertIn('do not stop later resources',page.locator('#bulk-execution-note').inner_text())
+        page.click('#sync-confirm')
+        page.wait_for_function("document.querySelector('#review-status').textContent.includes('Finished: 2 applied, 1 require review')")
+        self.assertEqual([body['name'] for body in state['writes']],['a','b','c'])
+        self.assertIn('Needs review: Source scale outcome is uncertain',page.locator('#bulk-review-rows').inner_text())
+        self.assertNotIn('Not processed',page.locator('#bulk-review-rows').inner_text())
+        page.click('#sync-cancel')
         # Re-analysis is required; the successful batch keeps the source endpoint.
         state['fail_write'] = False;state['writes'].clear()
         page.click('#step-scope');page.click('#submit');page.wait_for_selector('#results',state='visible')
         button.click();page.wait_for_function("!document.querySelector('#sync-confirm').disabled")
         page.click('#sync-confirm')
-        page.wait_for_function("document.querySelector('#review-status').textContent.includes('Applied 3 resources')")
+        page.wait_for_function("document.querySelector('#review-status').textContent.includes('Finished: 3 applied, 0 require review')")
         self.assertEqual([body['name'] for body in state['writes']],['a','b','c'])
         self.assertTrue(all(body['source_context']=='source' for body in state['writes']))
         self.assertEqual(state['target_writes'],[])

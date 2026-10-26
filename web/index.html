@@ -97,7 +97,7 @@
     <div class="review-effect"><dt>Change</dt><dd id="review-change"></dd></div>
   </dl>
   <p id="confirm-impact" class="warning"></p>
-  <section id="bulk-review" hidden><p class="muted">Resources are applied sequentially. Execution stops on the first failure; earlier changes are not automatically rolled back.</p><div class="table-wrap bulk-resource-list"><table><thead><tr><th>Resource</th><th>Status</th></tr></thead><tbody id="bulk-review-rows"></tbody></table></div></section><p id="review-status" role="status">Validating target…</p>
+  <section id="bulk-review" hidden><p id="bulk-execution-note" class="muted">Resources are applied sequentially. Execution stops on the first failure; earlier changes are not automatically rolled back.</p><div class="table-wrap bulk-resource-list"><table><thead><tr><th>Resource</th><th>Status</th></tr></thead><tbody id="bulk-review-rows"></tbody></table></div></section><p id="review-status" role="status">Validating target…</p>
   <section id="review-conflict" class="warning" hidden><strong id="conflict-summary"></strong><p id="conflict-note">No changes have been applied.</p><button id="retry-preview" type="button" hidden>Refresh preview</button><button id="preview-guarded" type="button" hidden>Review guarded update</button></section>
   <details id="review-advanced"><summary>Advanced options and technical details</summary>
     <label id="strategy-control">Existing target update method<select id="update-strategy"><option value="apply">Server-side apply · respect field ownership</option><option value="merge">Guarded merge update · overwrite submitted fields</option></select></label>

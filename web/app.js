@@ -337,25 +337,30 @@ function openBulkReview(action){
  if(writeInFlight||previewInFlight)return;const rows=bulkCandidates(action);if(rows.length<2||rows.length>100)return;
  pendingRollback=false;pendingPlan=null;activeReview={bulk:true,rows:[...rows],action,base:structuredClone(analyzedPayload),scope:scopeFingerprint()};
  $('sync-cancel').textContent='Cancel';$('bulk-review').hidden=false;$('bulk-review-rows').replaceChildren();
+ $('bulk-execution-note').textContent=action==='source-scale-zero'?'Resources are scaled sequentially. Errors or uncertain outcomes do not stop later resources. Review each result; earlier changes are not automatically rolled back.':'Resources are applied sequentially. Execution stops on the first failure; earlier changes are not automatically rolled back.';
  for(const row of rows){const tr=document.createElement('tr'),name=document.createElement('td'),state=document.createElement('td');name.textContent=row.kind+'/'+row.name+' · '+row.namespace;state.textContent='Pending validation';tr.append(name,state);$('bulk-review-rows').append(tr);}
  $('update-strategy').value='apply';$('strategy-control').hidden=action==='source-scale-zero';$('review-advanced').open=false;$('review-manifest').open=false;
  $('confirm-title').textContent=action==='source-scale-zero'?'Review SOURCE scale all to zero':action==='sync'?'Review sync all':'Review activate all';$('sync-confirm').textContent=bulkActionText(action)+' ('+rows.length+')';$('sync-confirm').classList.toggle('activate-action',action==='activate');
  setReviewSummary(action==='source-scale-zero'?'source':'target',action==='source-scale-zero'?activeReview.base.source_context:activeReview.base.target_context,[...new Set(rows.map(row=>row.namespace))].join(', '),rows.length+' filtered resources',reviewChange(activeReview));
- $('confirm-impact').textContent=action==='source-scale-zero'?'This stops all listed SOURCE workloads and can interrupt traffic or processing. Verify target readiness and coordinate cutover. Execution is sequential and stops on the first failure; earlier changes remain applied.':action==='sync'?'Sync the listed configuration resources. Running workloads may be affected; Secret rollback backups are not stored.':'Activate the listed workloads using their source configuration. The source remains running; coordinate duplicate processing and traffic cutover.';
+ $('confirm-impact').textContent=action==='source-scale-zero'?'This stops all listed SOURCE workloads and can interrupt traffic or processing. Verify target readiness and coordinate cutover. Execution is sequential and continues after errors or uncertain outcomes. Review each result; earlier changes remain applied.':action==='sync'?'Sync the listed configuration resources. Running workloads may be affected; Secret rollback backups are not stored.':'Activate the listed workloads using their source configuration. The source remains running; coordinate duplicate processing and traffic cutover.';
  $('sync-dialog').showModal();validateReview();
 }
 $('bulk-source-scale-zero').onclick=()=>openBulkReview('source-scale-zero');
 $('bulk-sync').onclick=()=>openBulkReview('sync');$('bulk-activate').onclick=()=>openBulkReview('activate');
 async function executeBulk(){
- const batch=pendingPlan,sourceScale=activeReview?.action==='source-scale-zero';pendingPlan=null;writeInFlight=true;$('sync-confirm').disabled=true;$('sync-cancel').disabled=true;$('update-strategy').disabled=true;let completed=0,currentIndex=-1;
+ const batch=pendingPlan,sourceScale=activeReview?.action==='source-scale-zero';pendingPlan=null;writeInFlight=true;$('sync-confirm').disabled=true;$('sync-cancel').disabled=true;$('update-strategy').disabled=true;let completed=0,needsReview=0,currentIndex=-1;
  try{
   if(!activeReview||scopeFingerprint()!==activeReview.scope)throw Error('Scope changed. Run analysis again.');
   for(let i=0;i<batch.plans.length;i++){
    currentIndex=i;const {row,plan}=batch.plans[i];setBulkState(i,'Applying…');$('review-status').textContent=`Applying ${i+1} of ${batch.plans.length}: ${row.kind}/${row.name}`;$('overview-activity').textContent=`Applying ${i+1}/${batch.plans.length}`;
    try{await clusterRequest(sourceScale?'/api/source/scale/execute':'/api/sync/execute',{token:plan.token,confirm:true});completed++;setBulkState(i,'Applied · check readiness');}
-   catch(error){setBulkState(i,'Stopped: '+error.message);throw error;}
+   catch(error){
+    if(!sourceScale){setBulkState(i,'Stopped: '+error.message);throw error;}
+    needsReview++;setBulkState(i,'Needs review: '+error.message);
+   }
   }
-  $('review-status').textContent=`Applied ${completed} resources. API acceptance is not readiness; check operation history and re-analyze.`;$('overview-activity').textContent=`Applied ${completed} resources`;
+  $('review-status').textContent=sourceScale?`Finished: ${completed} applied, ${needsReview} require review. All ${batch.plans.length} source workloads were attempted. Uncertain outcomes are not counted as applied. Check source state and operation history, then re-analyze.`:`Applied ${completed} resources. API acceptance is not readiness; check operation history and re-analyze.`;
+  $('overview-activity').textContent=sourceScale?`Source batch finished · ${completed} applied · ${needsReview} require review`:`Applied ${completed} resources`;
  }catch(error){for(let i=currentIndex+1;i<batch.plans.length;i++)setBulkState(i,'Not processed');$('review-status').textContent=`Stopped after ${completed} of ${batch.plans.length} applied. ${error.message} Remaining resources were not processed. Inspect history before retrying.`;$('overview-activity').textContent='Batch stopped; inspect history';}
  finally{
   await discardPreview(batch);activeReview=null;resultNeedsRefresh=true;updateOverview();await loadHistory();writeInFlight=false;$('sync-cancel').disabled=false;$('sync-cancel').textContent='Close';$('update-strategy').disabled=false;updateActionLabels();
