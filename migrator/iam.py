@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from . import azure_iam, iam_history
+from . import azure_iam, iam_history, iam_principals
 from .kubernetes import ClusterError
 
 _PLANS = {}
@@ -143,7 +143,10 @@ def analyze(body):
                      'source': {'assignments': source, 'definition': definitions['source']} if source else None,
                      'target': {'assignments': target, 'definition': definitions['target']} if target else None,
                      'recommendation': 'Review and create this missing grant on the target AKS resource' if syncable else reason or 'No permission difference found'})
-    return {'generated_at': datetime.now(timezone.utc).isoformat(), 'resources': rows, 'summary': summary,
+    identities = iam_principals.resolve(rows, body['azure_source_id'], body['azure_target_id'])
+    for row in rows:row['identity'] = identities[row['principal_id']]
+    principals = iam_principals.summarize(rows, identities, body['source_context'], body['target_context'])
+    return {'principals': principals, 'generated_at': datetime.now(timezone.utc).isoformat(), 'resources': rows, 'summary': summary,
             'coverage': {side: snapshot['coverage'] for side, snapshot in snapshots.items()},
             'complete': all(complete(snapshot) for snapshot in snapshots.values()) and not summary['UNKNOWN'],
             **{key: body[key] for key in ('source_context', 'target_context', 'azure_source_id', 'azure_target_id')},

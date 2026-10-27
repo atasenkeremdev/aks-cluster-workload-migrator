@@ -108,13 +108,14 @@
     </form>
     <section id="iam-progress" class="card" hidden aria-label="IAM scan progress"><h2>IAM scan progress</h2><p id="iam-progress-status" role="status"></p><details><summary>Read activity</summary><pre id="iam-progress-log"></pre></details></section>
     <section id="iam-results" hidden>
-      <div class="section-heading"><h2>IAM comparison</h2><button id="iam-download" type="button">Download IAM report</button></div>
+      <div class="section-heading"><h2>IAM comparison</h2><div class="row-actions"><button id="iam-download-readable" type="button">Download readable report</button><button id="iam-download" type="button">Download JSON</button></div></div>
       <p id="iam-result-scope" class="muted"></p><p id="iam-stale" class="warning" hidden>IAM scope changed. The results below belong to the previous scan.</p>
       <p id="iam-completeness" class="warning" role="status"></p>
       <div id="iam-summary" class="metrics"></div>
+      <section class="card"><h2>Access by identity</h2><p id="iam-name-status" class="muted"></p><label>Find user, group or managed identity<input id="iam-identity-search" type="search" placeholder="Name, email, object ID or role"></label><div id="iam-principals"></div></section>
       <details id="iam-coverage" class="card"><summary>Coverage and read permissions</summary><ul id="iam-coverage-list"></ul></details>
       <div class="card"><div class="grid"><label>Search role or principal<input id="iam-search" type="search" placeholder="Reader, AKS RBAC Reader or principal object ID"></label><label>Status<select id="iam-status"><option value="">All statuses</option><option>MATCH</option><option>DIFF</option><option>SOURCE_ONLY</option><option>TARGET_ONLY</option><option>UNKNOWN</option></select></label></div>
-        <p id="iam-count" class="muted" role="status"></p><div class="table-wrap"><table><thead><tr><th>Azure role</th><th>Principal object ID</th><th>Source / target assignment</th><th>Status</th><th>Actions</th></tr></thead><tbody id="iam-rows"></tbody></table></div>
+        <p id="iam-count" class="muted" role="status"></p><div class="table-wrap"><table><thead><tr><th>Azure role</th><th>Identity / object ID</th><th>Source / target assignment</th><th>Status</th><th>Actions</th></tr></thead><tbody id="iam-rows"></tbody></table></div>
         <div class="iam-pagination"><button id="iam-prev" type="button">Previous</button><span id="iam-page" class="muted"></span><button id="iam-next" type="button">Next</button></div>
       </div>
       <section id="iam-detail" class="card" hidden><h2 id="iam-detail-title"></h2><p id="iam-detail-recommendation" class="warning"></p><div class="versus-grid"><div><h3>Source IAM configuration</h3><pre id="iam-detail-source"></pre></div><div><h3>Target IAM configuration</h3><pre id="iam-detail-target"></pre></div></div></section>
