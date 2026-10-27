@@ -6,12 +6,43 @@ from pathlib import Path
 from .core import analyze, load_exclusions, PROTECTED, STATIC_EXCLUSIONS, DEFAULT_EXCLUSIONS_FILE
 from .kubernetes import ClusterError, contexts, namespaces, live_analyze, sync_plan, sync_execute, operation_health, rollback_plan, rollback_execute, discard_plans, source_scale_plan, source_scale_execute
 
-from . import jobs, history, iam_jobs, azure_iam, iam, iam_history
+from . import jobs, history, iam_jobs, azure_iam, iam, iam_history, auth
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
 class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
+    def end_headers(self):
+        self.send_header('X-Content-Type-Options','nosniff')
+        self.send_header('X-Frame-Options','DENY')
+        self.send_header('Referrer-Policy','same-origin')
+        if auth.enabled():self.send_header('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+        super().end_headers()
+
+    def dispatch(self, callback):
+        token=None
+        try:
+            if auth.enabled():
+                if self.path!='/health' and not auth.allowed_request(self):
+                    self.reply(403, {'error':'Request origin is not allowed.'});return
+                if auth.handle(self):return
+                if self.path not in ('/health','/style.css','/signin.js'):
+                    sid=auth.session_id(self)
+                    if not auth.session(sid,False):
+                        if self.path=='/':
+                            self.send_response(302);self.send_header('Location','/signin');self.send_header('Cache-Control','no-store');self.end_headers()
+                        else:self.reply(401,{'error':'Sign in with Microsoft to continue.'})
+                        return
+                    token=auth.current_session.set(sid)
+            callback()
+        except auth.AuthError as error:self.reply(error.status,{'error':str(error)})
+        except (ValueError,TypeError):self.reply(400,{'error':'Invalid request.'})
+        finally:
+            if token is not None:auth.current_session.reset(token)
+
+    def do_GET(self):self.dispatch(self.handle_GET)
+    def do_POST(self):self.dispatch(self.handle_POST)
+
+    def handle_GET(self):
         if self.path == '/api/namespace-policy':
             self.reply(200, {'protected_namespaces': sorted(PROTECTED), 'static_exclusions': sorted(STATIC_EXCLUSIONS)})
         elif self.path == '/api/iam/history':
@@ -41,7 +72,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(error.status, {'error': str(error), 'category': error.category})
         elif self.path == '/health':
             self.reply(200, {'status': 'ok'})
-        elif self.path in ('/', '/app.js', '/iam.js', '/style.css'):
+        elif self.path in ('/', '/app.js', '/iam.js', '/auth.js', '/signin.js', '/style.css'):
             name = 'index.html' if self.path == '/' else self.path[1:]
             data = (WEB / name).read_bytes()
             self.send_response(200)
@@ -53,19 +84,20 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.reply(404, {'error': 'Not found'})
 
-    def reply(self, status, obj):
+    def reply(self, status, obj, headers=None):
         data = json.dumps(obj).encode()
         self.send_response(status)
+        for key,value in (headers or {}).items():self.send_header(key,value)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Cache-Control', 'no-store')
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
-    def do_POST(self):
+    def handle_POST(self):
         host = self.headers.get('Host', '')
         origin = self.headers.get('Origin')
-        if host not in (f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}') or (origin and origin != 'http://' + host):
+        if not auth.allowed_request(self):
             self.reply(403, {'error': 'Only same-origin local requests are accepted.'})
             return
         if self.headers.get_content_type() != 'application/json':
@@ -136,13 +168,16 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=8081)
+    parser.add_argument('--host', default='127.0.0.1', help='Bind address; use 0.0.0.0 behind a private container Service')
     parser.add_argument('--exclusions-file', type=Path, default=DEFAULT_EXCLUSIONS_FILE)
     args = parser.parse_args()
     try:
+        auth.validate_config()
+        auth.prepare_kubeconfig()
         load_exclusions(args.exclusions_file)
     except (OSError, ValueError) as error:
-        parser.error(f'Cannot load namespace exclusions: {error}')
-    ThreadingHTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
+        parser.error(f'Cannot initialize application: {error}')
+    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 if __name__ == '__main__':
     main()

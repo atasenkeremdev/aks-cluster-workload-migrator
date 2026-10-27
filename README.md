@@ -4,6 +4,15 @@ A local UI for comparing AKS resources, preparing a passive target and explicitl
 activating individual workloads. Use a source-cluster → target-cluster workflow.
 Python 3.12+; no third-party Python dependencies. Default port: **8081**.
 
+## Jenkins and AKS hosting
+
+Use the root [Jenkinsfile](Jenkinsfile) to build/test/push an image on your selected
+Linux Docker agent. The [Dockerfile](Dockerfile) includes Azure CLI, kubectl and
+kubelogin. [AKS deployment instructions](deploy/README.md) explain registry
+credentials, a credential-free kubeconfig connection Secret, Microsoft user
+sign-in, isolated Azure profiles and persistent history. Hosted operations use the
+signed-in user's own permissions; no service-principal Secret is required.
+
 ## Run on Windows
 
 Install Python, Git, a kubectl version within one minor version of your AKS API

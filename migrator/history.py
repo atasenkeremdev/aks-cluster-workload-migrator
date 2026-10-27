@@ -1,4 +1,5 @@
 """Local durable operation journal. Raw Secret manifests are never persisted."""
+from . import auth
 from contextlib import contextmanager
 import json
 import os
@@ -29,6 +30,7 @@ def connect():
 
 
 def save(record):
+    record=auth.bind_owner(record)
     record = {**record, 'created_at': record.get('created_at', datetime.now(timezone.utc).isoformat()),
               'id': record.get('id', uuid.uuid4().hex),
               'updated_at': datetime.now(timezone.utc).isoformat()}
@@ -42,15 +44,18 @@ def get(operation_id):
         row = db.execute('SELECT data FROM operations WHERE id=?', (operation_id,)).fetchone()
     if not row:
         raise ValueError('Operation not found')
-    return json.loads(row[0])
+    record=json.loads(row[0]);auth.check_owner(record)
+    return record
 
 
 def listing():
     with connect() as db:
-        rows = db.execute('SELECT data FROM operations ORDER BY rowid DESC LIMIT 100').fetchall()
+        if auth.enabled():rows=db.execute("SELECT data FROM operations WHERE json_extract(data, '$.owner')=? ORDER BY rowid DESC LIMIT 100",(auth.owner(),)).fetchall()
+        else:rows = db.execute('SELECT data FROM operations ORDER BY rowid DESC LIMIT 100').fetchall()
     # Backups may contain ConfigMap configuration; never expose raw snapshots.
     return {'operations': [{key:value for key,value in json.loads(row[0]).items()
-                            if key not in ('before',)} for row in rows]}
+                            if key not in ('before',)} for row in rows
+                           if not auth.enabled() or json.loads(row[0]).get('owner')==auth.owner()]}
 
 
 def update(operation_id, changes, *, require_rollback=False, expected_status=None):
@@ -60,7 +65,7 @@ def update(operation_id, changes, *, require_rollback=False, expected_status=Non
         row = db.execute('SELECT data FROM operations WHERE id=?', (operation_id,)).fetchone()
         if not row:
             raise ValueError('Operation not found')
-        record = json.loads(row[0])
+        record = json.loads(row[0]);auth.check_owner(record)
         if expected_status is not None and record.get('status') != expected_status:
             raise ValueError('Operation changed during readiness check')
         if require_rollback and not record.get('rollback_available'):

@@ -1,0 +1,13 @@
+**
+!Dockerfile
+!migrator/
+!migrator/*.py
+!web/
+!web/*.html
+!web/*.js
+!web/*.css
+!container/
+!container/*.py
+!excluded-namespaces.txt
+!tests/
+!tests/*.py

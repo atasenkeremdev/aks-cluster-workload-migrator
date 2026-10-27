@@ -1,5 +1,6 @@
 """Azure CLI transport and read-only context lookup. Never changes the active account."""
 import json
+from . import auth
 import re
 import shutil
 import subprocess
@@ -24,7 +25,7 @@ def run_json(args):
     progress('Azure IAM: ' + ' '.join(args[:3]), 'waiting')
     try:
         response = subprocess.run([executable, *args, '--only-show-errors', '--output', 'json'],
-                                  stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, **({'env':auth.command_env()} if auth.enabled() else {}))
     except subprocess.TimeoutExpired:
         raise ClusterError('Azure IAM read timed out. Check Azure connectivity and authentication.') from None
     except OSError:

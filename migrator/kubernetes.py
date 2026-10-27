@@ -1,5 +1,6 @@
 """Read-only kubectl adapter. Never changes the current context or credentials."""
 import json
+from . import auth
 import hashlib
 import re
 import shutil
@@ -64,7 +65,7 @@ def run(args, payload=None):
             command_args[command_args.index('--patch-file=-')] = '--patch-file=' + patch_path
             input_options = {'stdin': subprocess.DEVNULL}
         result = subprocess.run([executable, '--request-timeout=15s', *command_args],
-                                capture_output=True, text=True, timeout=timeout, **input_options)
+                                capture_output=True, text=True, timeout=timeout, **({'env':auth.command_env()} if auth.enabled() else {}), **input_options)
     except subprocess.TimeoutExpired:
         raise ClusterError('Cluster request timed out. Check connectivity and authentication.') from None
     except OSError:
@@ -297,7 +298,7 @@ def sync_plan(body):
                 del _PLANS[key]
         if len(_PLANS) >= 100:
             raise ClusterError('Too many pending sync previews. Try again later.', 429)
-        _PLANS[token] = plan
+        _PLANS[token] = auth.bind_owner(plan)
     return {'token': token, 'manifest': safe_manifest(manifest), 'target_context': target,
             'operation': 'update' if target_obj else 'create', 'mode': mode, 'strategy': strategy,
             'update_effect': 'Guarded merge overwrites submitted fields, preserves omitted target fields and replaces lists as a whole. HPA or GitOps may change fields again.' if strategy == 'merge' else 'Server-side apply respects existing field ownership; ownership conflicts stop the update.',
@@ -352,9 +353,9 @@ def source_scale_plan(body):
                 del _PLANS[key]
         if len(_PLANS) >= 100:
             raise ClusterError('Too many pending previews. Try again later.', 429)
-        _PLANS[token] = dict(source_scale=True, source=source, namespace=ns, name=name, kind=kind,
+        _PLANS[token] = auth.bind_owner(dict(source_scale=True, source=source, namespace=ns, name=name, kind=kind,
                              resource=resource, manifest=manifest, action=action,
-                             fingerprint=fingerprint(obj), replicas=replicas, expires=time.monotonic()+300)
+                             fingerprint=fingerprint(obj), replicas=replicas, expires=time.monotonic()+300))
     return {'token': token, 'source_context': source, 'namespace': ns, 'name': name, 'kind': kind,
             'mode': 'source-scale-zero', 'manifest': manifest, 'previous_replicas': replicas, 'expires_in': 300,
             'warnings': ['This stops the selected SOURCE workload and can interrupt traffic or processing.',
@@ -366,7 +367,8 @@ def source_scale_execute(body):
     if body.get('confirm') is not True:
         raise ValueError('Explicit source scale confirmation is required')
     with _LOCK:
-        plan = _PLANS.pop(body.get('token', ''), None)
+        plan = _PLANS.get(body.get('token',''));auth.check_owner(plan)
+        if plan is not None:_PLANS.pop(body.get('token',''),None)
     if not plan or not plan.get('source_scale') or plan['expires'] < time.monotonic():
         raise ValueError('Source scale preview expired or already used. Preview again.')
     args = context_args(plan['source'])
@@ -406,7 +408,8 @@ def sync_execute(body):
     if body.get('confirm') is not True:
         raise ValueError('Explicit confirmation is required')
     with _LOCK:
-        plan = _PLANS.pop(body.get('token', ''), None)
+        plan = _PLANS.get(body.get('token',''));auth.check_owner(plan)
+        if plan is not None:_PLANS.pop(body.get('token',''),None)
     if not plan or plan.get('rollback') or plan.get('source_scale') or plan['expires'] < time.monotonic():
         raise ValueError('Sync preview expired or already used. Preview again.')
     args = context_args(plan['target'])
@@ -519,8 +522,8 @@ def rollback_plan(body):
                 del _PLANS[key]
         if len(_PLANS) >= 100:
             raise ClusterError('Too many pending previews. Try again later.', 429)
-        _PLANS[token] = {'rollback': record, 'manifest': manifest, 'version': current['metadata']['resourceVersion'],
-                         'uid': current['metadata']['uid'], 'expires': time.monotonic()+300}
+        _PLANS[token] = auth.bind_owner({'rollback': record, 'manifest': manifest, 'version': current['metadata']['resourceVersion'],
+                         'uid': current['metadata']['uid'], 'expires': time.monotonic()+300})
     return {'token': token, 'operation': 'restore' if manifest else 'delete-created-resource',
             'target_context': record['target'], 'manifest': safe_manifest(manifest) if manifest else None,
             'namespace': record['namespace'], 'name': record['name'], 'kind': record['kind'],
@@ -531,7 +534,8 @@ def rollback_execute(body):
     if body.get('confirm') is not True:
         raise ValueError('Explicit rollback confirmation required')
     with _LOCK:
-        plan = _PLANS.pop(body.get('token', ''), None)
+        plan = _PLANS.get(body.get('token',''));auth.check_owner(plan)
+        if plan is not None:_PLANS.pop(body.get('token',''),None)
     if not plan or not plan.get('rollback') or plan['expires'] < time.monotonic():
         raise ValueError('Rollback preview expired or already used')
     record = plan['rollback']
@@ -572,6 +576,7 @@ def discard_plans(body):
     with _LOCK:
         for token in tokens:
             if token in _PLANS and not _PLANS[token].get('rollback'):
+                auth.check_owner(_PLANS[token])
                 del _PLANS[token]
                 removed += 1
     return {'discarded': removed}

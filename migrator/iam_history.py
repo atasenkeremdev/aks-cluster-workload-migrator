@@ -1,4 +1,5 @@
 """Separate durable Azure IAM operation journal; never mixed with workload history."""
+from . import auth
 from contextlib import contextmanager
 import json
 import os
@@ -29,6 +30,7 @@ def connect():
 
 
 def save(record):
+    record=auth.bind_owner(record)
     record = {**record, 'created_at': record.get('created_at', datetime.now(timezone.utc).isoformat()),
               'id': record.get('id', uuid.uuid4().hex),
               'updated_at': datetime.now(timezone.utc).isoformat()}
@@ -39,8 +41,10 @@ def save(record):
 
 def listing():
     with connect() as db:
-        rows = db.execute('SELECT data FROM operations ORDER BY rowid DESC LIMIT 100').fetchall()
+        if auth.enabled():rows=db.execute("SELECT data FROM operations WHERE json_extract(data, '$.owner')=? ORDER BY rowid DESC LIMIT 100",(auth.owner(),)).fetchall()
+        else:rows = db.execute('SELECT data FROM operations ORDER BY rowid DESC LIMIT 100').fetchall()
     # Backups may contain ConfigMap configuration; never expose raw snapshots.
     return {'operations': [{key:value for key,value in json.loads(row[0]).items()
-                            if key not in ('before',)} for row in rows]}
+                            if key not in ('before',)} for row in rows
+                           if not auth.enabled() or json.loads(row[0]).get('owner')==auth.owner()]}
 

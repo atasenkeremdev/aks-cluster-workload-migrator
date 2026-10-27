@@ -49,6 +49,32 @@ class WorkspaceBrowserTests(unittest.TestCase):
         self.temp.cleanup()
         self.assertFalse(self.errors)
 
+    def test_microsoft_signin_gate_challenge_user_identity_and_logout(self):
+        from migrator import auth
+        tenant='11111111-1111-1111-1111-111111111111';oid='22222222-2222-2222-2222-222222222222'
+        origin=f'http://127.0.0.1:{self.server.server_port}'
+        sessions=[]
+        def start(sid):
+            sessions.append(sid)
+            auth._SESSIONS[sid].update(state='pending',verification_uri='https://microsoft.com/devicelogin',user_code='TEST-CODE',expires=__import__('time').time()+900)
+        with patch.dict(os.environ,{'MIGRATOR_AUTH_MODE':'device-code','MIGRATOR_TENANT_ID':tenant,
+                                  'MIGRATOR_ALLOWED_OBJECT_IDS':oid,'MIGRATOR_PUBLIC_ORIGIN':origin,'MIGRATOR_SESSION_DIR':self.temp.name+'/sessions'}),patch('migrator.auth.start_login',side_effect=start):
+            self.page.reload();self.page.wait_for_url('**/signin')
+            self.assertEqual(self.page.locator('#planner').count(),0)
+            self.assertEqual(self.page.request.get(origin+'/api/contexts').status,401)
+            self.page.click('#microsoft-signin');self.page.wait_for_selector('#device-challenge',state='visible')
+            self.assertEqual(self.page.locator('#device-code').inner_text(),'TEST-CODE')
+            self.assertEqual(self.page.locator('#device-link').get_attribute('href'),'https://microsoft.com/devicelogin')
+            sid=sessions[0];self.addCleanup(auth.cleanup,sid)
+            auth._SESSIONS[sid].update(state='authenticated',user={'object_id':oid,'tenant_id':tenant,'name':'Alice Operator','username':'alice@example.com'},expires=__import__('time').time()+600)
+            self.page.wait_for_url(origin+'/')
+            self.page.wait_for_selector('#user-session',state='visible')
+            self.assertIn('Alice Operator',self.page.locator('#user-name').inner_text())
+            cookies=self.page.context.cookies();self.assertTrue(next(item for item in cookies if item['name']==auth.COOKIE)['httpOnly'])
+            self.page.click('#sign-out');self.page.wait_for_url('**/signin')
+            self.assertNotIn(sid,auth._SESSIONS)
+            self.assertEqual(self.page.request.get(origin+'/api/contexts').status,401)
+
     def test_iam_context_selection_autofills_ids_without_stale_overwrites(self):
         page=self.page
         source_id='/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/source/providers/Microsoft.ContainerService/managedClusters/source'

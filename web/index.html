@@ -17,7 +17,7 @@
   <small>v0.5 · Prepare & activate</small>
 </aside>
 <main>
-  <header class="workspace-header"><span id="workspace-title">WORKLOAD MIGRATION</span><span class="local-badge">● Local workspace</span></header>
+  <header class="workspace-header"><span id="workspace-title">WORKLOAD MIGRATION</span><span class="local-badge">● Local workspace</span><div id="user-session" hidden><span id="user-name"></span> <button id="sign-out" type="button">Sign out</button></div></header>
   <nav class="workspace-tabs" role="tablist" aria-label="Workspace">
     <button id="tab-workloads" type="button" role="tab" aria-selected="true" aria-controls="workload-panel">Workload migration</button>
     <button id="tab-iam" type="button" role="tab" aria-selected="false" aria-controls="iam-panel" tabindex="-1">IAM inventory</button>
@@ -146,5 +146,6 @@
 <dialog id="iam-sync-dialog" aria-labelledby="iam-confirm-title"><span class="eyebrow">TARGET AZURE IAM CHANGE</span><h2 id="iam-confirm-title">Review missing role assignment</h2><dl class="review-summary"><div><dt>Role</dt><dd id="iam-confirm-role"></dd></div><div><dt>Principal</dt><dd id="iam-confirm-principal"></dd></div><div class="review-resource"><dt>Target AKS scope</dt><dd id="iam-confirm-scope"></dd></div></dl><p id="iam-confirm-warning" class="warning"></p><p id="iam-confirm-status" role="status"></p><div class="dialog-actions"><button id="iam-sync-cancel" type="button">Cancel</button><button id="iam-sync-confirm" type="button" class="activate-action" disabled>Create target assignment</button></div></dialog>
 <script src="/app.js"></script>
 <script src="/iam.js"></script>
+<script src="/auth.js"></script>
 </body>
 </html>

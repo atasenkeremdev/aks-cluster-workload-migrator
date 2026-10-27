@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - aks.yaml
+images:
+  - name: registry.internal.example:5000/platform/aks-cluster-workload-migrator
+    newName: registry.internal.example:5000/platform/aks-cluster-workload-migrator
+    newTag: REPLACE_WITH_JENKINS_TAG

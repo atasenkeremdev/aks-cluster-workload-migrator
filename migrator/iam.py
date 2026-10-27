@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from . import azure_iam, iam_history, iam_principals
+from . import azure_iam, iam_history, iam_principals, auth
 from .kubernetes import ClusterError
 
 _PLANS = {}
@@ -203,20 +203,23 @@ def sync_plan(body):
         for key in list(_PLANS):
             if _PLANS[key]['expires'] < time.monotonic():del _PLANS[key]
         if len(_PLANS) >= 100:raise ClusterError('Too many IAM previews. Try again later.', 429)
-        _PLANS[token] = {'body': copy.deepcopy(body), 'grant': grant, 'expires': time.monotonic()+300}
+        _PLANS[token] = auth.bind_owner({'body': copy.deepcopy(body), 'grant': grant, 'expires': time.monotonic()+300})
     return {'token': token, 'expires_in': 300, 'grant': {key: grant[key] for key in ('principalId', 'principalType', 'roleName', 'roleDefinitionId', 'targetScope', 'sourceScope')},
             'warning': 'This adds a target Azure IAM permission grant to the same principal. Azure does not provide a role-assignment dry-run; the preview does not prove write authorization. Review the exact principal, role and target scope before confirming.'}
 
 
 def discard(body):
     token = body.get('token')
-    with _LOCK:_PLANS.pop(token, None)
+    with _LOCK:
+        auth.check_owner(_PLANS.get(token));_PLANS.pop(token,None)
     return {'discarded': True}
 
 
 def sync_execute(body):
     if body.get('confirm') is not True:raise ValueError('Explicit IAM sync confirmation is required')
-    with _LOCK:plan = _PLANS.pop(body.get('token', ''), None)
+    with _LOCK:
+        plan=_PLANS.get(body.get('token',''));auth.check_owner(plan)
+        if plan is not None:_PLANS.pop(body.get('token',''),None)
     if not plan or plan['expires'] < time.monotonic():raise ValueError('IAM preview expired or already used; preview again')
     grant = validated_grant(plan['body'])
     if grant is None:return {'status': 'AlreadyPresent'}

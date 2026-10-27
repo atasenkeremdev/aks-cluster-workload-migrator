@@ -1,5 +1,6 @@
 """Bounded in-memory live-analysis jobs; progress never contains manifests."""
 import copy
+from . import auth
 import secrets
 import threading
 import time
@@ -22,8 +23,8 @@ def start(body):
         job_id = secrets.token_urlsafe(24)
         _JOBS[job_id] = {'state': 'running', 'started': now, 'updated': now,
                          'step_started': now, 'current': 'Starting analysis', 'events': [],
-                         'completed_commands': 0}
-    threading.Thread(target=_worker, args=(job_id, copy.deepcopy(body)), daemon=True).start()
+                         'completed_commands': 0, 'owner':auth.owner()}
+    threading.Thread(target=auth.run_as, args=(auth.current_session.get(), _worker, job_id, copy.deepcopy(body)), daemon=True).start()
     return {'job_id': job_id}
 
 
@@ -57,6 +58,7 @@ def status(job_id):
         job = _JOBS.get(job_id)
         if not job:
             raise ClusterError('Analysis no longer exists. Start a new analysis.', 404)
+        auth.check_owner(job)
         result = copy.deepcopy(job)
     now = time.monotonic()
     end = now if result['state'] == 'running' else result['updated']

@@ -1,0 +1,143 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aks-migrator
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aks-migrator
+  namespace: aks-migrator
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aks-migrator-state
+  namespace: aks-migrator
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aks-migrator
+  namespace: aks-migrator
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: aks-migrator
+  template:
+    metadata:
+      labels:
+        app: aks-migrator
+    spec:
+      serviceAccountName: aks-migrator
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: internal-registry-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrator
+          image: registry.internal.example:5000/platform/aks-cluster-workload-migrator:REPLACE_WITH_JENKINS_TAG
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+          env:
+            - name: MIGRATOR_AUTH_MODE
+              value: device-code
+            - name: MIGRATOR_AZURE_AUTH
+              value: device-code
+            - name: MIGRATOR_TENANT_ID
+              value: REPLACE_WITH_ENTRA_TENANT_GUID
+            - name: MIGRATOR_ALLOWED_OBJECT_IDS
+              value: REPLACE_WITH_YOUR_USER_OBJECT_GUID
+            - name: MIGRATOR_PUBLIC_ORIGIN
+              value: http://localhost:8081
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: '2'
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+          volumeMounts:
+            - name: kubeconfig
+              mountPath: /etc/migrator/kubeconfig
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/migrator
+            - name: temporary
+              mountPath: /tmp
+      volumes:
+        - name: kubeconfig
+          secret:
+            secretName: migrator-kubeconfig
+            defaultMode: 0440
+        - name: state
+          persistentVolumeClaim:
+            claimName: aks-migrator-state
+        - name: temporary
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aks-migrator
+  namespace: aks-migrator
+spec:
+  type: ClusterIP
+  selector:
+    app: aks-migrator
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+---
+# The UI uses powerful mounted credentials and is intended for one trusted operator.
+# Access through kubectl port-forward, authorized by the hosting cluster's RBAC.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aks-migrator-private-ui
+  namespace: aks-migrator
+spec:
+  podSelector:
+    matchLabels:
+      app: aks-migrator
+  policyTypes: [Ingress]
+  ingress: []
