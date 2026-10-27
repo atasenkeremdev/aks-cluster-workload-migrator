@@ -1,170 +1,187 @@
-"""Isolated, read-only IAM comparisons with honest partial coverage."""
+"""Azure role inventory and additive, confirmed target IAM sync safeguards."""
 import copy
 import json
+import os
+import tempfile
+import time
 import unittest
 from unittest.mock import patch
-from migrator import iam, azure_iam, iam_jobs
+from migrator import iam, azure_iam, iam_history, history, iam_jobs
 from migrator.kubernetes import ClusterError
 
-SOURCE_ID = '/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/source/providers/Microsoft.ContainerService/managedClusters/source'
-TARGET_ID = '/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/target/providers/Microsoft.ContainerService/managedClusters/target'
+SOURCE_ID='/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/source/providers/Microsoft.ContainerService/managedClusters/source'
+TARGET_ID='/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/target/providers/Microsoft.ContainerService/managedClusters/target'
+ROLE='acdd72a7-3385-48ef-bd42-f606fba81ae7'
+PRINCIPAL='33333333-3333-3333-3333-333333333333'
+RAW_RUN_JSON=azure_iam.run_json
+TENANT='44444444-4444-4444-4444-444444444444'
 
 
-def role(name='read', namespace='demo'):
-    return {'metadata':{'name':name,'namespace':namespace}, 'rules':[{'verbs':['get','list'],'apiGroups':[''],'resources':['pods']}]}
+def definition(scope):
+    return {'id':scope.split('/resourceGroups/')[0]+'/providers/Microsoft.Authorization/roleDefinitions/'+ROLE,
+            'roleName':'Reader','roleType':'BuiltInRole','assignableScopes':['/'],
+            'permissions':[{'actions':['*/read'],'notActions':[],'dataActions':[],'notDataActions':[]}]}
 
 
-class IAMTests(unittest.TestCase):
+def assignment(scope):
+    return {'id':scope+'/providers/Microsoft.Authorization/roleAssignments/generated-assignment',
+            'scope':scope,'principalId':PRINCIPAL,'principalType':'Group','roleDefinitionId':definition(scope)['id'],
+            'condition':None,'conditionVersion':None}
+
+
+class RoleIAMTests(unittest.TestCase):
     def setUp(self):
-        self.body = {'source_context':'source','target_context':'target','namespaces':[]}
-        self.context_patch = patch('migrator.iam.context_args', side_effect=lambda context:['--context',context])
-        self.context_patch.start();self.addCleanup(self.context_patch.stop)
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        env=patch.dict(os.environ,{'MIGRATOR_STATE_DIR':self.temp.name});env.start();self.addCleanup(env.stop)
+        iam._PLANS.clear()
+        self.body={'source_context':'source','target_context':'target','azure_source_id':SOURCE_ID,'azure_target_id':TARGET_ID}
+        self.request={**self.body,'principal_id':PRINCIPAL,'role_id':ROLE}
+        self.source=[assignment(SOURCE_ID)];self.target=[]
+        self.source_defs=[definition(SOURCE_ID)];self.target_defs=[definition(TARGET_ID)]
+        self.calls=[];self.writes=[];self.fail=None;self.cross_tenant=False;self.fail_reads=False
+        runner=patch('migrator.azure_iam.run_json',side_effect=self.azure)
+        runner.start();self.addCleanup(runner.stop)
 
-    def test_projection_does_not_return_tokens_or_arbitrary_annotations(self):
-        value = {'metadata':{'name':'app','namespace':'demo','annotations':{
-            'azure.workload.identity/client-id':'public-client','unsafe':'DO-NOT-EXPOSE'}},
-            'secrets':[{'name':'token-secret'}], 'token':'DO-NOT-EXPOSE','imagePullSecrets':[{'name':'registry'}]}
-        entry = iam.inventory_entry(value,'ServiceAccount')
-        self.assertEqual(entry['configuration']['workload_identity']['azure.workload.identity/client-id'],'public-client')
-        self.assertNotIn('DO-NOT-EXPOSE',json.dumps(entry))
-        self.assertNotIn('token-secret',json.dumps(entry))
+    def azure(self,args):
+        self.calls.append(args)
+        source=args[args.index('--subscription')+1].startswith('1111')
+        if args[:2]==['account','show']:
+            return '55555555-5555-5555-5555-555555555555' if self.cross_tenant and not source else TENANT
+        if self.fail_reads and not source and args[:3]==['role','assignment','list']:
+            raise ClusterError('Azure denied access')
+        if args[:3]==['role','assignment','list']:return copy.deepcopy(self.source if source else self.target)
+        if args[:3]==['role','definition','list']:return copy.deepcopy(self.source_defs if source else self.target_defs)
+        if args[:3]==['role','assignment','create']:
+            self.assertEqual(args[args.index('--scope')+1],TARGET_ID)
+            self.assertFalse(source)
+            self.assertEqual(iam_history.listing()['operations'][0]['status'],'Applying')
+            self.writes.append(args)
+            if self.fail:raise self.fail
+            self.target=[assignment(TARGET_ID)]
+            return copy.deepcopy(self.target[0])
+        raise AssertionError(args)
 
-    def test_compare_ignores_rule_order_and_runtime_metadata(self):
-        def read(args):
-            source = args[1]=='source'
-            if 'roles.rbac.authorization.k8s.io' in args:
-                value=role();value['metadata']['uid']='different-per-cluster'
-                if not source:value['rules'][0]['verbs'].reverse()
-                return {'items':[value]}
-            return {'items':[]}
-        with patch('migrator.iam.read_json',side_effect=read):
-            report=iam.analyze(self.body)
-        self.assertTrue(report['complete']);self.assertEqual(report['summary']['MATCH'],1)
-        self.assertEqual(report['resources'][0]['diff_paths'],[])
+    def execute(self,token):
+        return iam.sync_execute({'token':token,'confirm':True})
 
-    def test_serviceaccount_identity_difference_and_binding_subjects(self):
-        def read(args):
-            if 'serviceaccounts' in args:
-                return {'items':[{'metadata':{'name':'app','namespace':'demo','annotations':{
-                    'azure.workload.identity/client-id':args[1]+'-client'}}}]}
-            if 'rolebindings.rbac.authorization.k8s.io' in args:
-                return {'items':[{'metadata':{'name':'read','namespace':'demo'},'roleRef':{'kind':'Role','name':'read','apiGroup':'rbac.authorization.k8s.io'},
-                                  'subjects':[{'kind':'ServiceAccount','name':'app','namespace':'demo'}]}]}
-            return {'items':[]}
-        with patch('migrator.iam.read_json',side_effect=read):report=iam.analyze(self.body)
-        self.assertEqual(report['summary']['DIFF'],1);self.assertEqual(report['summary']['MATCH'],1)
-        self.assertIn('/workload_identity/azure.workload.identity~1client-id', next(row for row in report['resources'] if row['status']=='DIFF')['diff_paths'])
+    def test_azure_roles_only_no_kubernetes_inventory(self):
+        with patch('migrator.kubernetes.run') as kubectl:
+            result=iam.analyze(self.body)
+        kubectl.assert_not_called()
+        self.assertTrue(result['complete']);row=result['resources'][0]
+        self.assertEqual(row['name'],'Reader');self.assertEqual(row['status'],'SOURCE_ONLY');self.assertTrue(row['syncable'])
+        self.assertTrue(all(args[:3] in (['role','assignment','list'],['role','definition','list']) for args in self.calls))
+        self.assertEqual(self.writes,[])
 
-    def test_permission_failure_is_unknown_not_source_only(self):
-        def read(args):
-            if 'roles.rbac.authorization.k8s.io' in args:
-                if args[1]=='target':raise ClusterError('Kubernetes denied access (RBAC Forbidden).')
-                return {'items':[role()]}
-            return {'items':[]}
-        with patch('migrator.iam.read_json',side_effect=read):report=iam.analyze(self.body)
-        self.assertFalse(report['complete']);self.assertEqual(report['summary']['UNKNOWN'],1)
-        self.assertEqual(report['summary']['SOURCE_ONLY'],0)
+    def test_generated_assignment_ids_and_cluster_scope_ids_do_not_create_false_differences(self):
+        self.target=[assignment(TARGET_ID)];self.target[0]['id']='different-generated-id'
+        row=iam.analyze(self.body)['resources'][0]
+        self.assertEqual(row['status'],'MATCH');self.assertFalse(row['syncable'])
 
-    def test_missing_and_extra_resources_are_compared_only_after_successful_reads(self):
-        def read(args):
-            return {'items':[role(args[1])]} if 'roles.rbac.authorization.k8s.io' in args else {'items':[]}
-        with patch('migrator.iam.read_json',side_effect=read):report=iam.analyze(self.body)
-        self.assertEqual(report['summary']['SOURCE_ONLY'],1);self.assertEqual(report['summary']['TARGET_ONLY'],1)
+    def test_inherited_and_direct_matching_grants_are_not_duplicated(self):
+        self.target=[assignment(TARGET_ID),assignment(TARGET_ID)]
+        self.target[1]['scope']=TARGET_ID.split('/resourceGroups/')[0]
+        result=iam.analyze(self.body)
+        self.assertEqual(result['summary']['MATCH'],1)
+        self.assertTrue(result['resources'][0]['target']['assignments'][1]['inherited'])
 
-    def test_scope_excludes_protected_namespaces_and_reads_cluster_rbac(self):
-        calls=[]
-        def read(args):
-            calls.append(args)
-            if 'serviceaccounts' in args:
-                return {'items':[{'metadata':{'name':'system','namespace':'kube-system'}}, {'metadata':{'name':'app','namespace':'demo'}}]}
-            return {'items':[]}
-        with patch('migrator.iam.read_json',side_effect=read):report=iam.analyze({**self.body,'namespaces':['demo']})
-        self.assertEqual(len(report['resources']),1)
-        self.assertTrue(all('get' in args for args in calls))
-        self.assertTrue(any('clusterroles.rbac.authorization.k8s.io' in args for args in calls))
-        self.assertTrue(all('--all-namespaces' not in args for args in calls))
+    def test_inherited_source_is_visible_but_not_syncable(self):
+        self.source[0]['scope']=SOURCE_ID.split('/resourceGroups/')[0]
+        row=iam.analyze(self.body)['resources'][0]
+        self.assertEqual(row['status'],'SOURCE_ONLY');self.assertFalse(row['syncable'])
+        with self.assertRaises(ValueError):iam.sync_plan(self.request)
+        self.assertEqual(self.writes,[])
 
-    def test_cluster_context_failure_does_not_hide_other_side(self):
-        with patch('migrator.iam.context_args',side_effect=lambda context: (_ for _ in ()).throw(ClusterError('Unavailable')) if context=='source' else ['--context',context]), patch('migrator.iam.read_json',return_value={'items':[role()]}):
-            # Return valid resources only for Roles; other resource shapes are not accepted here.
-            with patch('migrator.iam.read_json',side_effect=lambda args:{'items':[role()]} if 'roles.rbac.authorization.k8s.io' in args else {'items':[]}):
-                report=iam.analyze(self.body)
-        self.assertEqual(report['summary']['UNKNOWN'],1);self.assertFalse(report['complete'])
+    def test_read_failure_is_unknown_never_missing_target_permission(self):
+        self.fail_reads=True;result=iam.analyze(self.body)
+        self.assertFalse(result['complete']);self.assertEqual(result['summary']['UNKNOWN'],1)
+        self.assertFalse(result['resources'][0]['syncable'])
+        with self.assertRaises(ValueError):iam.sync_plan(self.request)
 
-    def test_invalid_inputs_never_read_a_cluster(self):
-        for values in [{'source_context':'target'}, {'namespaces':['kube-system']}, {'namespaces':'demo'},
-                       {'namespaces':['demo','demo']}, {'include_azure':True}, {'include_azure':'yes'}]:
-            with self.subTest(values=values), patch('migrator.iam.read_json') as read:
-                with self.assertRaises(ValueError):iam.analyze({**self.body,**values})
-                read.assert_not_called()
+    def test_target_only_and_conditional_differences_are_not_overwritten(self):
+        self.source=[];self.target=[assignment(TARGET_ID)]
+        self.assertEqual(iam.analyze(self.body)['summary']['TARGET_ONLY'],1)
+        self.source=[assignment(SOURCE_ID)];self.target[0]['condition']='condition'
+        self.assertEqual(iam.analyze(self.body)['summary']['DIFF'],1)
+        with self.assertRaises(ValueError):iam.sync_plan(self.request)
+        self.assertEqual(self.writes,[])
 
-    def test_azure_results_and_coverage_are_kept_in_iam_report(self):
-        entry={'kind':'AKSIdentity','name':'control-plane','namespace':'','configuration':{'principalId':'public-id'},'system_managed':False}
-        with patch('migrator.iam.read_json',return_value={'items':[]}), patch('migrator.azure_iam.collect',return_value=({('AKSIdentity','','control-plane'):entry},[{'kind':'AKSIdentity','scope':'','state':'complete','count':1}])) as azure:
-            report=iam.analyze({**self.body,'include_azure':True,'azure_source_id':SOURCE_ID,'azure_target_id':TARGET_ID})
-        self.assertEqual(azure.call_count,2);self.assertEqual(report['resources'][0]['provider'],'Azure')
-        self.assertEqual(report['summary']['MATCH'],1)
+    def test_custom_role_permissions_must_match_and_role_must_exist(self):
+        self.target_defs[0]['permissions'][0]['actions']=['*']
+        self.assertFalse(iam.analyze(self.body)['resources'][0]['syncable'])
+        with self.assertRaises(ValueError):iam.sync_plan(self.request)
+        self.target_defs=[]
+        with self.assertRaises(ValueError):iam.sync_plan(self.request)
 
-    def test_iam_worker_has_separate_state_and_sanitizes_unexpected_errors(self):
+    def test_preview_is_read_only_and_execution_requires_confirmation(self):
+        plan=iam.sync_plan(self.request)
+        self.assertEqual(plan['grant']['roleName'],'Reader');self.assertIn('does not prove write authorization',plan['warning'])
+        self.assertEqual(self.writes,[])
+        with self.assertRaises(ValueError):iam.sync_execute({'token':plan['token']})
+        result=self.execute(plan['token']);self.assertEqual(result['status'],'Applied')
+        self.assertEqual(len(self.writes),1)
+        self.assertIn('--assignee-object-id',self.writes[0]);self.assertIn('--assignee-principal-type',self.writes[0])
+        self.assertEqual(iam_history.listing()['operations'][0]['status'],'Applied')
+        self.assertEqual(history.listing()['operations'],[])
+        with self.assertRaises(ValueError):self.execute(plan['token'])
+
+    def test_stale_source_and_target_role_definitions_block_a_write(self):
+        token=iam.sync_plan(self.request)['token']
+        self.source=[]
+        with self.assertRaises(ValueError):self.execute(token)
+        self.source=[assignment(SOURCE_ID)];token=iam.sync_plan(self.request)['token']
+        self.target_defs[0]['permissions'][0]['actions']=['*']
+        with self.assertRaises(ValueError):self.execute(token)
+        self.assertEqual(self.writes,[])
+
+    def test_existing_target_grant_after_preview_is_idempotently_skipped(self):
+        token=iam.sync_plan(self.request)['token'];self.target=[assignment(TARGET_ID)]
+        self.assertEqual(self.execute(token)['status'],'AlreadyPresent');self.assertEqual(self.writes,[])
+
+    def test_expired_cancelled_and_cross_tenant_previews_cannot_write(self):
+        token=iam.sync_plan(self.request)['token'];iam._PLANS[token]['expires']=time.monotonic()-1
+        with self.assertRaises(ValueError):self.execute(token)
+        token=iam.sync_plan(self.request)['token'];iam.discard({'token':token})
+        with self.assertRaises(ValueError):self.execute(token)
+        self.cross_tenant=True
+        with self.assertRaisesRegex(ValueError,'Cross-tenant'):iam.sync_plan(self.request)
+        self.assertEqual(self.writes,[])
+
+    def test_conditional_unknown_principal_and_unassignable_role_require_manual_review(self):
+        for change in ('condition','principal','scope'):
+            with self.subTest(change=change):
+                self.source=[assignment(SOURCE_ID)];self.target_defs=[definition(TARGET_ID)]
+                if change=='condition':self.source[0]['condition']='ABAC condition'
+                if change=='principal':self.source[0]['principalType']=None
+                if change=='scope':self.target_defs[0]['assignableScopes']=[SOURCE_ID]
+                with self.assertRaises(ValueError):iam.sync_plan(self.request)
+        self.assertEqual(self.writes,[])
+
+    def test_uncertain_create_is_journaled_and_not_retried(self):
+        token=iam.sync_plan(self.request)['token'];self.fail=ClusterError('Timed out')
+        with self.assertRaisesRegex(ClusterError,'uncertain'):self.execute(token)
+        self.assertEqual(iam_history.listing()['operations'][0]['status'],'Unknown')
+        self.assertEqual(len(self.writes),1)
+
+    def test_journal_failure_prevents_creating_a_grant(self):
+        token=iam.sync_plan(self.request)['token']
+        with patch('migrator.iam_history.save',side_effect=OSError('Disk full')):
+            with self.assertRaises(OSError):self.execute(token)
+        self.assertEqual(self.writes,[])
+
+    def test_iam_jobs_remain_separate_and_sanitize_unexpected_errors(self):
         from migrator import jobs
         self.assertIsNot(iam_jobs._JOBS,jobs._JOBS)
         iam_jobs._JOBS['test']={'state':'running','started':0,'updated':0,'step_started':0,'events':[],'completed_commands':0}
         self.addCleanup(iam_jobs._JOBS.pop,'test',None)
-        with patch('migrator.iam_jobs.analyze',side_effect=RuntimeError('PRIVATE-ERROR')):
-            iam_jobs._worker('test',self.body)
-        result=iam_jobs.status('test')
-        self.assertEqual(result['state'],'failed');self.assertNotIn('PRIVATE-ERROR',json.dumps(result))
+        with patch('migrator.iam_jobs.analyze',side_effect=RuntimeError('PRIVATE')):iam_jobs._worker('test',self.body)
+        self.assertNotIn('PRIVATE',json.dumps(iam_jobs.status('test')))
 
-
-class AzureIAMTests(unittest.TestCase):
-    def setUp(self):
-        self.identity_id='/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/identities/providers/Microsoft.ManagedIdentity/userAssignedIdentities/app'
-        self.calls=[]
-        self.identity={'id':self.identity_id,'name':'app','resourceGroup':'identities','clientId':'client','principalId':'principal','tenantId':'tenant','unsafe':'PRIVATE'}
-
-    def cli_run(self,args):
-        self.calls.append(args)
-        if args[:2]==['aks','show']:
-            return {'enableRbac':True,'aadProfile':{'enableAzureRbac':True,'tenantId':'tenant','unsafe':'PRIVATE'},
-                    'identity':{'type':'SystemAssigned','principalId':'control','tenantId':'tenant'},
-                    'oidcIssuerProfile':{'issuerURL':'https://issuer.example'},'unsafe':'PRIVATE'}
-        if args[:2]==['identity','list']:return [copy.deepcopy(self.identity)]
-        if args[:3]==['identity','federated-credential','list']:
-            return [{'name':'app-federation','issuer':'https://issuer.example','subject':'system:serviceaccount:demo:app','audiences':['api://AzureADTokenExchange'],'unsafe':'PRIVATE'}]
-        if args[:3]==['role','assignment','list']:
-            return [{'principalId':'principal','principalType':'ServicePrincipal','roleDefinitionId':'/roles/reader','scope':SOURCE_ID,'unsafe':'PRIVATE'}]
-        raise AssertionError(args)
-
-    def test_azure_inventory_projects_metadata_and_uses_only_read_commands(self):
-        with patch('migrator.azure_iam.run_json',side_effect=self.cli_run):entries,coverage=azure_iam.collect(SOURCE_ID,{'client'})
-        self.assertTrue(all(check['state']=='complete' for check in coverage))
-        self.assertNotIn('PRIVATE',json.dumps(list(entries.values())))
-        self.assertIn('FederatedCredential',{key[0] for key in entries})
-        self.assertTrue(all('list' in args or 'show' in args for args in self.calls))
-        self.assertTrue(all('--subscription' in args for args in self.calls))
-        self.assertTrue(any('--assignee-object-id' in args for args in self.calls))
-        self.assertTrue(any('--include-inherited' in args for args in self.calls))
-
-    def test_azure_denied_access_is_partial_not_empty_success(self):
-        with patch('migrator.azure_iam.run_json',side_effect=ClusterError('Azure denied access')):
-            entries,coverage=azure_iam.collect(SOURCE_ID,set())
-        self.assertEqual(entries,{})
-        self.assertTrue(all(check['state']=='unavailable' for check in coverage))
-
-    def test_unresolved_workload_identity_cannot_be_called_complete(self):
-        with patch('migrator.azure_iam.run_json',side_effect=self.cli_run):entries,coverage=azure_iam.collect(SOURCE_ID,{'not-in-subscription'})
-        self.assertEqual(next(check for check in coverage if check['kind']=='ManagedIdentity')['state'],'unavailable')
-        self.assertEqual(next(check for check in coverage if check['kind']=='FederatedCredential')['state'],'unavailable')
-
-    def test_cli_error_does_not_expose_stderr_and_never_logs_in(self):
+    def test_cli_failure_does_not_print_authentication_output(self):
         response=type('Response',(),{'returncode':1,'stdout':'','stderr':'PRIVATE az login token'})()
-        with patch('migrator.azure_iam.shutil.which',return_value='/usr/bin/az'), patch('migrator.azure_iam.subprocess.run',return_value=response) as run:
-            with self.assertRaises(ClusterError) as caught:azure_iam.run_json(['aks','show','--ids',SOURCE_ID])
-        self.assertNotIn('PRIVATE',str(caught.exception));self.assertIn('authentication',str(caught.exception))
-        self.assertEqual(run.call_args.args[0][1:3],['aks','show'])
-        self.assertNotIn('shell',run.call_args.kwargs)
-
-
+        with patch('migrator.azure_iam.shutil.which',return_value='/usr/bin/az'),patch('migrator.azure_iam.subprocess.run',return_value=response):
+            with self.assertRaises(ClusterError) as caught:RAW_RUN_JSON(['role','assignment','list'])
+        self.assertNotIn('PRIVATE',str(caught.exception))
 class ContextResolutionTests(unittest.TestCase):
     def resolve(self, endpoint, clusters, failure=False):
         def azure(args):

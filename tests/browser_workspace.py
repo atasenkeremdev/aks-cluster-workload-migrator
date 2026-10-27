@@ -86,126 +86,98 @@ class WorkspaceBrowserTests(unittest.TestCase):
         page.fill('#iam-azure-source',source_id)
         self.assertEqual(page.locator('#iam-azure-source').input_value(),source_id)
 
-    def test_iam_workspace_is_independent_partial_read_only_and_exportable(self):
-        page = self.page
-        source_id = '/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/source/providers/Microsoft.ContainerService/managedClusters/source'
-        target_id = '/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/target/providers/Microsoft.ContainerService/managedClusters/target'
-        gate = threading.Event()
-        self.addCleanup(gate.set)
-        reads = []
-        def run(args,payload=None):
-            reads.append(args)
-            self.assertIsNone(payload)
+    def test_iam_roles_compare_and_sync_without_kubernetes_rbac_or_workload_history(self):
+        from migrator import iam_history, history
+        page=self.page
+        source_id='/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/source/providers/Microsoft.ContainerService/managedClusters/source'
+        target_id='/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/target/providers/Microsoft.ContainerService/managedClusters/target'
+        reader='acdd72a7-3385-48ef-bd42-f606fba81ae7';aks_reader='7f6c6a51-bcf8-42ba-9220-52d62157d7db'
+        principal='33333333-3333-3333-3333-333333333333'
+        def role(scope,guid,name):
+            return {'id':scope.split('/resourceGroups/')[0]+'/providers/Microsoft.Authorization/roleDefinitions/'+guid,'roleName':name,'roleType':'BuiltInRole','assignableScopes':['/'],'permissions':[{'actions':['*/read'],'dataActions':[]}]}
+        def assignment(scope,guid):
+            return {'id':scope+'/providers/Microsoft.Authorization/roleAssignments/'+guid,'scope':scope,'roleDefinitionId':role(scope,guid,'')['id'],'principalId':principal,'principalType':'Group'}
+        gate=threading.Event();self.addCleanup(gate.set)
+        state={'target':[assignment(target_id,aks_reader)],'writes':[],'fail':False}
+        calls=[]
+        def kubectl(args,payload=None):
+            calls.append(args);self.assertIsNone(payload)
             if 'get-contexts' in args:return 'source\ntarget\n'
-            context = args[args.index('--context')+1]
-            if 'view' in args:
-                self.assertIn('jsonpath={.clusters[0].cluster.server}',args)
-                self.assertNotIn('--raw',args)
-                return 'https://'+context+'.api.example'
-            self.assertIn('get',args)
-            resource = args[args.index('get')+1]
-            if resource=='serviceaccounts':
-                return json.dumps({'items':[{'metadata':{'name':'app','namespace':'demo','annotations':{
-                    'azure.workload.identity/client-id':'client-'+context,'unsafe':'PRIVATE-TOKEN'}},'secrets':[{'name':'PRIVATE-TOKEN'}]}]})
-            if resource=='roles.rbac.authorization.k8s.io':
-                if context=='target':raise ClusterError('Kubernetes denied access (RBAC Forbidden).')
-                return json.dumps({'items':[{'metadata':{'name':'read-pods','namespace':'demo'},'rules':[{'apiGroups':[''],'verbs':['get'],'resources':['pods']}]}]})
-            return '{"items":[]}'
+            self.assertIn('view',args);self.assertIn('jsonpath={.clusters[0].cluster.server}',args)
+            return 'https://'+args[args.index('--context')+1]+'.api.example'
         def azure(args):
-            self.assertTrue('list' in args or 'show' in args)
-            if args[:2]==['account','list']:
-                return ['11111111-1111-1111-1111-111111111111','22222222-2222-2222-2222-222222222222']
-            source = args[args.index('--subscription')+1].startswith('1111')
-            context='source' if source else 'target'
-            if args[:2]==['aks','list']:
-                return [{'id':source_id if source else target_id,'fqdn':context+'.api.example'}]
-            if args[:2]==['aks','show']:
+            if args[:2]==['account','list']:return ['11111111-1111-1111-1111-111111111111','22222222-2222-2222-2222-222222222222']
+            source=args[args.index('--subscription')+1].startswith('1111');scope=source_id if source else target_id
+            if args[:2]==['aks','list']:return [{'id':scope,'fqdn':('source' if source else 'target')+'.api.example'}]
+            if args[:2]==['account','show']:return '44444444-4444-4444-4444-444444444444'
+            if args[:3]==['role','definition','list']:return [role(scope,reader,'Reader'),role(scope,aks_reader,'Azure Kubernetes Service RBAC Reader')]
+            if args[:3]==['role','assignment','list']:
                 gate.wait(15)
-                return {'enableRbac':True,'identity':{'type':'SystemAssigned','principalId':'principal-'+context},
-                        'aadProfile':{'enableAzureRbac':True,'unsafe':'PRIVATE-TOKEN'}}
-            if args[:2]==['identity','list']:
-                return [{'id':'/identity/'+context,'name':'app','resourceGroup':'identities','clientId':'client-'+context,'principalId':'workload-'+context}]
-            if args[:3]==['identity','federated-credential','list']:
-                return [{'name':'app','issuer':'https://issuer-'+context+'.example','subject':'system:serviceaccount:demo:app','audiences':['api://AzureADTokenExchange']}]
-            return []
-        # Keep an analyzed workload visible before starting the separate IAM process.
-        page.locator('#advanced>summary').click();page.select_option('#mode','offline')
-        page.click('#demo');page.click('#submit');page.wait_for_selector('#results',state='visible')
+                if not source and state['fail']:raise ClusterError('Azure denied access')
+                return [assignment(source_id,reader),assignment(source_id,aks_reader)] if source else copy.deepcopy(state['target'])
+            if args[:3]==['role','assignment','create']:
+                self.assertFalse(source);self.assertEqual(args[args.index('--scope')+1],target_id)
+                self.assertEqual(iam_history.listing()['operations'][0]['status'],'Applying')
+                state['writes'].append(args);state['target'].append(assignment(target_id,reader));return assignment(target_id,reader)
+            raise AssertionError(args)
+        page.locator('#advanced>summary').click();page.select_option('#mode','offline');page.click('#demo');page.click('#submit');page.wait_for_selector('#results',state='visible')
         workload_rows=page.locator('#rows').inner_text()
-        with patch('migrator.kubernetes.run',side_effect=run),patch('migrator.azure_iam.run_json',side_effect=azure):
-            page.click('#tab-iam')
-            self.assertTrue(page.locator('#workload-panel').is_hidden())
-            page.click('#iam-connect')
-            page.wait_for_function("document.querySelector('#iam-target').options.length===3")
+        with patch('migrator.kubernetes.run',side_effect=kubectl),patch('migrator.azure_iam.run_json',side_effect=azure):
+            page.click('#tab-iam');page.click('#iam-connect');page.wait_for_function("document.querySelector('#iam-target').options.length===3")
             page.select_option('#iam-source','source');page.select_option('#iam-target','target')
-            page.fill('#iam-namespaces','demo')
-            page.fill('#iam-azure-source',source_id);page.fill('#iam-azure-target',target_id)
-            page.click('#iam-start')
-            page.wait_for_selector('#iam-progress',state='visible')
-            page.click('#tab-workloads')
-            self.assertTrue(page.locator('#results').is_visible())
-            self.assertEqual(page.locator('#rows').inner_text(),workload_rows)
-            page.click('#tab-iam');gate.set()
-            page.wait_for_selector('#iam-results',state='visible')
-            self.assertIn('Partial inventory',page.locator('#iam-completeness').inner_text())
-            self.assertEqual(page.locator('#iam-results [data-action]').count(),0)
-            page.select_option('#iam-status','UNKNOWN')
-            self.assertIn('read-pods',page.locator('#iam-rows').inner_text())
-            page.locator('#iam-rows button').first.click()
-            self.assertIn('Resolve inventory access',page.locator('#iam-detail-recommendation').inner_text())
-            self.assertIn('Unavailable',page.locator('#iam-detail-target').inner_text())
-            page.select_option('#iam-status','');page.select_option('#iam-provider','Azure')
-            self.assertIn('FederatedCredential',page.locator('#iam-rows').inner_text())
-            self.assertNotIn('ServiceAccount',page.locator('#iam-rows').inner_text())
-            self.assertTrue(page.locator('#iam-detail').is_hidden())
-            with page.expect_download() as download_info:page.click('#iam-download')
-            saved=json.loads(Path(download_info.value.path()).read_text())
-            self.assertFalse(saved['complete']);self.assertTrue(saved['include_azure'])
-            self.assertGreater(saved['summary']['UNKNOWN'],0)
-            self.assertNotIn('PRIVATE-TOKEN',json.dumps(saved))
-            self.assertEqual(saved['azure_source_id'],source_id)
-            page.fill('#iam-namespaces','another')
-            self.assertTrue(page.locator('#iam-stale').is_visible())
+            page.wait_for_function("document.querySelector('#iam-azure-source').value.endsWith('/source')&&document.querySelector('#iam-azure-target').value.endsWith('/target')")
+            self.assertEqual(page.locator('#iam-namespaces').count(),0)
+            page.click('#iam-start');page.wait_for_selector('#iam-progress',state='visible')
+            page.click('#tab-workloads');self.assertEqual(page.locator('#rows').inner_text(),workload_rows)
+            page.click('#tab-iam');gate.set();page.wait_for_selector('#iam-results',state='visible')
+            self.assertIn('Azure Kubernetes Service RBAC Reader',page.locator('#iam-rows').inner_text())
+            self.assertEqual(page.locator('#iam-rows tr').count(),2)
+            self.assertEqual(page.locator('#iam-rows [data-iam-sync]').count(),1)
+            self.assertNotIn('ClusterRole',page.locator('#iam-rows').inner_text())
+            page.locator('[data-iam-sync]').click();page.wait_for_function("!document.querySelector('#iam-sync-confirm').disabled")
+            self.assertEqual(page.locator('#iam-confirm-role').inner_text(),'Reader')
+            self.assertEqual(page.locator('#iam-confirm-scope').inner_text(),target_id)
+            self.assertIn('does not prove write authorization',page.locator('#iam-confirm-warning').inner_text())
+            self.assertEqual(state['writes'],[])
+            page.click('#iam-sync-cancel');self.assertEqual(state['writes'],[])
+            page.locator('[data-iam-sync]').click();page.wait_for_function("!document.querySelector('#iam-sync-confirm').disabled")
+            page.click('#iam-sync-confirm');page.wait_for_function("document.querySelector('#iam-confirm-status').textContent.startsWith('Applied')")
+            self.assertEqual(len(state['writes']),1);self.assertEqual(history.listing()['operations'],[])
+            page.wait_for_function("document.querySelector('#iam-history-rows').textContent.includes('Applied')")
+            self.assertIn('Reader',page.locator('#iam-history-rows').inner_text())
+            page.click('#iam-sync-cancel');page.click('#iam-start')
+            page.wait_for_function("document.querySelector('#iam-stale').hidden&&document.querySelector('#iam-rows').textContent.includes('MATCH')&&document.querySelectorAll('[data-iam-sync]').length===0")
+            state['fail']=True;page.click('#iam-start')
+            page.wait_for_function("document.querySelector('#iam-completeness').textContent.includes('Partial')")
+            self.assertIn('UNKNOWN',page.locator('#iam-rows').inner_text());self.assertEqual(page.locator('[data-iam-sync]').count(),0)
+            with page.expect_download() as info:page.click('#iam-download')
+            saved=json.loads(Path(info.value.path()).read_text());self.assertFalse(saved['complete']);self.assertEqual(saved['summary']['UNKNOWN'],2)
             page.set_viewport_size({'width':390,'height':844})
             self.assertTrue(page.evaluate('document.documentElement.scrollWidth<=window.innerWidth'))
-            page.screenshot(path='/tmp/iam-inventory-mobile.png',full_page=True)
-            page.set_viewport_size({'width':1500,'height':1100})
-            page.click('#tab-workloads')
-            self.assertEqual(page.locator('#rows').inner_text(),workload_rows)
-            self.assertTrue(all('get' in args or 'get-contexts' in args or ('view' in args and 'jsonpath={.clusters[0].cluster.server}' in args) for args in reads))
+            page.screenshot(path='/tmp/azure-role-inventory-mobile.png',full_page=True)
+            page.click('#tab-workloads');self.assertEqual(page.locator('#rows').inner_text(),workload_rows)
+            self.assertTrue(all('get-contexts' in args or 'view' in args for args in calls))
 
-    def test_iam_pagination_kubernetes_only_and_keyboard_tabs(self):
-        page = self.page
-        rows = [{'provider':'Kubernetes','kind':'Role','namespace':'demo','name':'role-'+str(i),
-                 'status':'DIFF','source':{'configuration':{'rules':[]}},'target':{'configuration':{'rules':[]}},
-                 'diff_paths':[],'recommendation':'Review target permissions'} for i in range(55)]
-        result = {'resources':rows,'summary':{'MATCH':0,'DIFF':55,'SOURCE_ONLY':0,'TARGET_ONLY':0,'UNKNOWN':0},
-                  'coverage':{'source':[{'kind':'Role','scope':'demo','state':'complete','count':55}],
-                              'target':[{'kind':'Role','scope':'demo','state':'complete','count':55}]},
-                  'complete':True,'source_context':'source','target_context':'target','namespaces':['demo'],
-                  'include_azure':False,'notice':'Read-only inventory'}
-        submitted = []
+    def test_iam_role_pagination_and_keyboard_tabs(self):
+        page=self.page
+        source_id='/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/source/providers/Microsoft.ContainerService/managedClusters/source'
+        target_id='/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/target/providers/Microsoft.ContainerService/managedClusters/target'
+        rows=[{'name':'Reader '+str(i),'principal_id':str(i),'role_id':'role','status':'SOURCE_ONLY','syncable':False,'source':{'assignments':[{'inherited':False,'scope':source_id}]},'target':None,'recommendation':'Review'} for i in range(55)]
+        result={'resources':rows,'summary':{'MATCH':0,'DIFF':0,'SOURCE_ONLY':55,'TARGET_ONLY':0,'UNKNOWN':0},'coverage':{},'complete':True,'source_context':'source','target_context':'target','azure_source_id':source_id,'azure_target_id':target_id,'notice':'Azure IAM only'}
         page.route('**/api/contexts',lambda route:route.fulfill(json={'contexts':['source','target']}))
-        def start(route):
-            submitted.append(route.request.post_data_json)
-            route.fulfill(status=202,json={'job_id':'pages'})
-        page.route('**/api/iam/jobs',start)
+        page.route('**/api/iam/resolve-context',lambda route:route.fulfill(json={'resource_id':source_id if route.request.post_data_json['context']=='source' else target_id,'message':'Matched'}))
+        page.route('**/api/iam/jobs',lambda route:route.fulfill(status=202,json={'job_id':'pages'}))
         page.route('**/api/iam/jobs/pages',lambda route:route.fulfill(json={'state':'completed','current':'Complete','elapsed_seconds':1,'events':[],'result':result}))
-        page.focus('#tab-workloads');page.keyboard.press('ArrowRight')
-        self.assertTrue(page.locator('#iam-panel').is_visible())
-        page.click('#iam-connect');page.wait_for_function("document.querySelector('#iam-source').options.length===3")
+        page.focus('#tab-workloads');page.keyboard.press('ArrowRight');page.click('#iam-connect')
+        page.wait_for_function("document.querySelector('#iam-source').options.length===3")
         page.select_option('#iam-source','source');page.select_option('#iam-target','target')
-        page.uncheck('#iam-azure');page.fill('#iam-namespaces','demo')
+        page.wait_for_function("document.querySelector('#iam-azure-source').value.endsWith('/source')&&document.querySelector('#iam-azure-target').value.endsWith('/target')")
         page.click('#iam-start');page.wait_for_selector('#iam-results',state='visible')
-        self.assertFalse(submitted[0]['include_azure'])
-        self.assertEqual(page.locator('#iam-rows tr').count(),50)
-        page.click('#iam-next');self.assertEqual(page.locator('#iam-rows tr').count(),5)
-        self.assertEqual(page.locator('#iam-page').inner_text(),'Page 2 of 2')
-        page.fill('#iam-search','role-54');self.assertEqual(page.locator('#iam-rows tr').count(),1)
+        self.assertEqual(page.locator('#iam-rows tr').count(),50);page.click('#iam-next');self.assertEqual(page.locator('#iam-rows tr').count(),5)
+        page.fill('#iam-search','Reader 54');self.assertEqual(page.locator('#iam-rows tr').count(),1)
         with page.expect_download() as info:page.click('#iam-download')
         self.assertEqual(len(json.loads(Path(info.value.path()).read_text())['resources']),55)
-        page.focus('#tab-iam');page.keyboard.press('Home')
-        self.assertTrue(page.locator('#workload-panel').is_visible())
+        page.focus('#tab-iam');page.keyboard.press('Home');self.assertTrue(page.locator('#workload-panel').is_visible())
         self.assertEqual(page.locator('#src option').count(),1)
 
     def test_comparison_filters_navigation_and_responsive_layout(self):

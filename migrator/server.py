@@ -6,7 +6,7 @@ from pathlib import Path
 from .core import analyze, load_exclusions, PROTECTED, STATIC_EXCLUSIONS, DEFAULT_EXCLUSIONS_FILE
 from .kubernetes import ClusterError, contexts, namespaces, live_analyze, sync_plan, sync_execute, operation_health, rollback_plan, rollback_execute, discard_plans, source_scale_plan, source_scale_execute
 
-from . import jobs, history, iam_jobs, azure_iam
+from . import jobs, history, iam_jobs, azure_iam, iam, iam_history
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
@@ -14,6 +14,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/api/namespace-policy':
             self.reply(200, {'protected_namespaces': sorted(PROTECTED), 'static_exclusions': sorted(STATIC_EXCLUSIONS)})
+        elif self.path == '/api/iam/history':
+            try:
+                self.reply(200, iam_history.listing())
+            except (OSError, sqlite3.Error):
+                self.reply(503, {'error': 'IAM history is unavailable. Check local state directory access.'})
         elif self.path.startswith('/api/iam/jobs/'):
             try:
                 self.reply(200, iam_jobs.status(self.path.removeprefix('/api/iam/jobs/')))
@@ -66,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get_content_type() != 'application/json':
             self.reply(415, {'error': 'Content-Type must be application/json.'})
             return
-        if self.path not in ('/api/iam/resolve-context', '/api/iam/jobs', '/api/source/scale/plan', '/api/source/scale/execute', '/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute', '/api/live/jobs', '/api/operations/health', '/api/rollback/plan', '/api/rollback/execute', '/api/sync/discard'):
+        if self.path not in ('/api/iam/sync/plan', '/api/iam/sync/execute', '/api/iam/sync/discard', '/api/iam/resolve-context', '/api/iam/jobs', '/api/source/scale/plan', '/api/source/scale/execute', '/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute', '/api/live/jobs', '/api/operations/health', '/api/rollback/plan', '/api/rollback/execute', '/api/sync/discard'):
             self.reply(404, {'error': 'Not found'})
             return
         try:
@@ -75,6 +80,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(413, {'error': 'JSON payload must be between 1 byte and 5 MB'})
                 return
             body = json.loads(self.rfile.read(length))
+            if self.path == '/api/iam/sync/plan':
+                self.reply(200, iam.sync_plan(body))
+                return
+            if self.path == '/api/iam/sync/execute':
+                self.reply(200, iam.sync_execute(body))
+                return
+            if self.path == '/api/iam/sync/discard':
+                self.reply(200, iam.discard(body))
+                return
             if self.path == '/api/iam/resolve-context':
                 self.reply(200, azure_iam.resolve_context(body))
                 return

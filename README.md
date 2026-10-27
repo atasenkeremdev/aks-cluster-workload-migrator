@@ -157,104 +157,90 @@ namespaces, generated resources, service-account tokens and the legacy
 PostgreSQL exclusion are also skipped. AMQ CRDs, cluster RBAC, PVC/PV data,
 StorageClasses, ingress/DNS cutover and database migration are not copied.
 
-## IAM sync inventory
+## Azure IAM role inventory and sync
 
-Open the **IAM inventory** workspace tab for a separate, read-only inventory.
-Its context selectors, namespace scope, progress, filters and JSON report are
-independent of workload migration. Switching tabs preserves both workflows and
-does not cancel either background scan. IAM entries never enter workload results,
-bulk actions, sync previews or operation history. This feature inventories sync
-candidates; it does **not** create, change or delete identity or access resources.
+The **IAM inventory** tab compares **Azure IAM roles assigned to the selected AKS
+resources**: for example **Reader** and **Azure Kubernetes Service RBAC Reader**.
+It no longer scans Kubernetes Roles, ClusterRoles, RoleBindings, ServiceAccounts,
+managed identities or federated credentials. Workload migration remains separate.
 
-1. Select **Load IAM contexts** and choose distinct source and target kubeconfig
-   contexts. Leave namespaces empty for all non-excluded namespaces, or enter up
-   to 200 exact names separated by commas or whitespace. Static/system exclusions
-   apply. Workload page selections and its additional UI exclusions are not shared.
-2. Leave **Include Azure IAM** enabled for both providers and select the source and
-   target contexts. Each AKS resource ID is filled automatically when the context
-   API hostname uniquely matches Azure AKS endpoint metadata. Context aliases and
-   private endpoints are supported. If lookup is unavailable or ambiguous, enter
-   the full AKS resource ID manually. Disable this option
-   for a Kubernetes-only inventory. Automatic lookup reads enabled subscriptions
-   (up to 20) and matches public/private AKS FQDNs to the selected API hostname;
-   it never reads kubeconfig credentials or changes the active context/account.
-3. Select **Scan IAM inventory**. Review completion and per-side coverage before
-   treating differences as sync candidates. Filter by provider, kind, status or
-   name/namespace; **View comparison** shows only the projected IAM configuration.
-   Results use pages of 50 rows; **Download IAM report** includes all results,
-   source/target scope, generation time, coverage, exclusions and limitations.
+1. Select **Load IAM contexts** and choose source and target contexts. AKS resource
+   IDs are resolved automatically by matching the context API hostname against
+   Azure public/private endpoints. Context aliases work. If discovery fails or is
+   ambiguous, enter the IDs manually. Automatic discovery reads up to 20 enabled
+   subscriptions and only the kubeconfig API server URL, not credential material.
+2. Select **Scan IAM inventory**. Reads use the host's existing Azure CLI login and
+   explicit subscriptions. No Kubernetes RBAC API is queried during the scan.
+3. Review the role name, principal object ID, direct/inherited origin and status.
+   Filter by role/principal or status; download a complete JSON report. Generated
+   assignment IDs and source/target AKS scope IDs are not treated as permission
+   differences. Comparison uses principal object ID, role definition GUID,
+   assignment conditions and role permissions. Duplicate equivalent direct and
+   inherited grants do not create false differences.
+4. For an eligible **SOURCE_ONLY** direct grant choose **Sync missing role**.
+   Review the exact principal, Azure role and target AKS resource scope, then
+   explicitly confirm **Create target assignment**. Cancelling performs no write.
 
-### Kubernetes IAM coverage
+**MATCH** means equivalent inventoried grants, not proof of effective application
+access. **DIFF** means the same principal/role has different conditions or role
+permissions. **TARGET_ONLY** grants remain untouched. **UNKNOWN** indicates
+unavailable reads or unresolved role definitions; it never enables sync. Roles
+inherited from a subscription, resource group or management group are shown for
+comparison but are not recreated at the target AKS scope.
 
-The scan reads ServiceAccounts, Roles, RoleBindings, ClusterRoles and
-ClusterRoleBindings. Namespace selection limits namespaced objects; cluster-wide
-RBAC remains in scope, including system-managed defaults and binding subjects
-that reference excluded namespaces. System-managed defaults are identified for
-manual review. Rules and subjects are compared without list-order noise or
-runtime metadata. ServiceAccount projection includes token automount behavior
-and Azure Workload Identity client ID, tenant ID and token expiration annotations.
-No Secrets, issued tokens, kubeconfig credential contents or workload manifests
-are requested. Pod Workload Identity labels, effective permissions and actual
-Azure federation access are not verified by the Kubernetes scan alone.
+### Additive IAM sync safeguards
 
-The application host needs compatible `kubectl`, trusted kubeconfig and the
-required authentication plugins. Read permission is required for the listed
-resource types. Empty namespace scope uses all-namespace reads; use explicit
-namespaces when RBAC only permits selected namespace reads. Cluster-wide RBAC
-reads can still be unavailable and are reported separately.
+Sync adds one missing direct assignment to the **same principal object ID** on the
+selected target AKS resource. It never changes/deletes existing grants or writes
+to the source. There is no global IAM sync-all action. Conditional assignments,
+unresolved principal types, overlapping source grants and differing custom role
+permissions require manual review. Custom role definitions are not copied; the
+same role GUID with matching permissions must exist and be assignable at the
+target scope. Cross-tenant sync is blocked instead of guessing target identities.
 
-### Azure IAM coverage and prerequisites
+Source/target assignments, role definitions and subscription tenants are re-read
+before preview and execution. Previews expire in five minutes and are single-use.
+Changed source grants or role configuration block execution. If an equivalent
+target grant appears after preview, execution returns **AlreadyPresent** without
+creating a duplicate. Assignment creation uses a deterministic UUID for the
+principal/role/target tuple, explicit principal type and object ID, with no Graph
+name lookup, account switching or automatic login.
 
-Azure inventory uses the host's existing Azure CLI authentication without changing
-the active account/subscription or logging in automatically. Install a current
-Azure CLI with managed identity federated credential support and authenticate
-through your organization's procedure in the terminal that starts the app.
-No Azure credentials should be pasted into this UI or into report files.
-Each read passes an explicit subscription taken from its AKS resource ID.
+Azure role assignment creation has **no server-side dry-run**. Preview validates
+inventory/compatibility but cannot prove write authorization or prevent every
+concurrent administrator change. The operator needs
+`Microsoft.Authorization/roleAssignments/write` at the target scope, plus the
+read permissions used by inventory. An accepted API response does not guarantee
+immediate effective access; Azure authorization changes may take time to propagate.
 
-The Azure adapter reads:
+Each attempted write is recorded durably in the **separate IAM sync history**
+before submission, using `.state/iam-history.sqlite3` (or `MIGRATOR_STATE_DIR`).
+Workload history and readiness totals do not include IAM operations. Uncertain
+outcomes remain **Unknown**, are never retried automatically and require target
+IAM inspection before another attempt. After execution, refresh the IAM scan
+before further sync. No automatic rollback or permission revocation is offered.
 
-- AKS RBAC/Entra access settings, OIDC issuer and Workload Identity enablement.
-- Control-plane and kubelet identity metadata.
-- Managed identities related to the AKS identity references or inventoried
-  ServiceAccount client IDs within that cluster's subscription.
-- Those identities' federated credentials: issuer, subject and audiences.
-- Direct/inherited role assignments at the AKS resource scope, plus assignments
-  for related identity principals throughout the AKS subscription. Role IDs,
-  principal IDs, scopes and assignment conditions are retained; Microsoft Graph
-  name lookup is disabled. Role definitions and effective permission expansion
-  are not performed.
+### Scope and limitations
 
-The current login needs read access to AKS, managed identities, federated
-credentials and role assignments at the requested scopes. Managed identity
-lookup lists identities in the AKS subscription; related principals are queried
-within that subscription. Cross-subscription identities and assignments,
-transitive group membership, deny assignments, PIM eligibility, custom role
-permissions and application-level access are outside verified coverage. Related
-identity/principal expansion is limited to 200 per side and reports incomplete
-coverage if exceeded. Namespaced ServiceAccount read failures also mark related
-Azure workload identity coverage incomplete.
+Inventory needs a current Azure CLI and authenticated access to list role
+assignments and role definitions at both AKS scopes. Subscription metadata reads
+are also required to verify matching tenants before sync. The host's existing
+kubectl/kubeconfig is used only to load contexts and discover API endpoints;
+AKS resource IDs can also be entered manually after selecting contexts.
 
-Client/principal IDs, issuers and resource scopes often legitimately differ
-between clusters. Treat differences as an inventory for review, not instructions
-to duplicate source grants or trust relationships. No IAM write endpoint exists.
+The comparison includes direct AKS assignments and parent-scope inherited
+assignments returned by Azure CLI. Child namespace-scoped Azure grants, cluster
+identities' outbound grants to ACR/Key Vault/other resources, transitive group
+membership, deny assignments and PIM eligibility are not expanded. It does not
+scan Kubernetes authorization. Keep principal/role/scope mapping under review
+before granting access; effective permissions are not computed.
 
-### Interpreting partial results
-
-A successful read distinguishes MATCH, DIFF, SOURCE_ONLY and TARGET_ONLY.
-If a relevant read fails, observed entries are **UNKNOWN**, rather than claiming
-that the other side is missing. Unavailable tools, authentication, permissions,
-missing scopes and timeouts appear in **Coverage and read permissions**. Zero
-rows with unavailable reads do not mean IAM is synchronized. Incomplete scans
-can still export their report and leave the workload workflow usable.
-
-IAM scans have their own in-memory job queue (four concurrent scans, up to 30
-retained jobs). Completed jobs expire on later submissions after ten minutes;
-activity logs retain the latest 100 events. Kubernetes reads use the existing
-request budgets; Azure CLI reads have a 60-second subprocess timeout. Browser
-connection loss does not cancel a submitted scan. Downloaded inventories contain
-identity IDs and access metadata; store them according to your organization's
-configuration-data handling practices.
+Partial coverage is shown per side. Zero observed rows with failed reads do not
+mean IAM is synchronized. Scans keep an independent four-worker queue, up to 30
+jobs, ten-minute completed-job retention and the latest 100 activity events.
+Azure CLI commands have a 60-second subprocess budget; switching tabs preserves
+the workload and IAM workflows independently. Reports contain public identity
+and access metadata, never credential values or tokens.
 
 ## Prepare, then activate
 
@@ -456,8 +442,8 @@ node --check web/iam.js
 
 Tests cover directional normalization, operator policy, preparation/HPA guards,
 dependency checks, write conflicts, readiness, durablesapshots, unknown outcomes
-and guarded rollback. IAM tests cover RBAC normalization, credential-free projections,
-partial coverage, Azure CLI read scopes and independent scan state. Browser integration was exercised against simulated cluster
+and guarded rollback. IAM tests cover role comparison, partial coverage, context resolution,
+confirmed additive grants, stale previews, separate history and independent scan state. Browser integration was exercised against simulated cluster
 responses; raw DELETE transport was checked with real kubectl against a local
 fake API. Real Azure IAM reads, AKS writes and Windows execution require validation on your machine.
 
