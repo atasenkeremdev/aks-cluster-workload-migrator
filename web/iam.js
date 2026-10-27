@@ -41,6 +41,14 @@
   element('iam-coverage-list').replaceChildren();for(const [side,checks] of Object.entries(report.coverage))for(const check of checks){const li=document.createElement('li');li.textContent=side+' · '+check.kind+' · '+check.state+' · '+check.count+(check.error?' — '+check.error:'');element('iam-coverage-list').append(li);}renderRows();loadHistory();
  }
  function identityLabel(row){const info=row.identity;return info?info.display_name+' · '+(info.principal_type==='ManagedIdentity'?'Managed identity':info.principal_type==='ServicePrincipal'?'Service principal':info.principal_type):row.principal_id;}
+ function assignButton(row,summary=false){
+  const button=document.createElement('button');button.type='button';button.textContent='Assign to target';
+  button.dataset.iamAssign='true';button.dataset.principalId=row.principal_id;button.dataset.roleId=row.role_id;
+  if(!summary)button.dataset.iamSync='true';
+  button.setAttribute('aria-label','Assign '+row.name+' to '+identityLabel(row)+' on target');
+  button.disabled=stale()||writing||running;button.onclick=()=>preview(row);return button;
+ }
+ function updateAssignButtons(){for(const button of document.querySelectorAll('[data-iam-assign]'))button.disabled=stale()||writing||running;}
  function renderPrincipals(){
   const principals=report.principals||[],query=element('iam-identity-search').value.trim().toLowerCase();
   element('iam-name-status').textContent=principals.filter(item=>item.name_resolved).length+' of '+principals.length+' identity names resolved. Names are display metadata; comparison and sync always use object IDs.';
@@ -48,7 +56,18 @@
   for(const item of principals.filter(item=>[item.display_name,item.principal_id,item.user_principal_name||'',item.summary].some(value=>value.toLowerCase().includes(query)))){
    const card=document.createElement('article');card.className='iam-identity-card';const title=document.createElement('h3');title.textContent=item.display_name+' · '+(item.principal_type==='ManagedIdentity'?'Managed identity':item.principal_type==='ServicePrincipal'?'Service principal':item.principal_type);
    const meta=document.createElement('p');meta.className='muted';meta.textContent=item.principal_id+(item.user_principal_name?' · '+item.user_principal_name:'');
-   const text=document.createElement('p');text.textContent=item.summary;card.append(title,meta,text);element('iam-principals').append(card);
+   const text=document.createElement('p');text.textContent=item.summary;card.append(title,meta,text);
+   const missing=report.resources.filter(row=>row.principal_id===item.principal_id&&row.status==='SOURCE_ONLY');
+   if(missing.length){const heading=document.createElement('h4');heading.textContent='Missing assignments on '+report.target_context;card.append(heading);
+    const list=document.createElement('ul');list.className='iam-missing-assignments';
+    for(const row of missing){const entry=document.createElement('li'),role=document.createElement('strong');role.textContent=row.name;entry.append(role);
+     if(row.syncable)entry.append(assignButton(row,true));
+     else{const reason=document.createElement('span');reason.className='muted';reason.textContent='Manual review: '+row.recommendation;entry.append(reason);}
+     list.append(entry);
+    }
+    card.append(list);
+   }
+   element('iam-principals').append(card);
   }
   if(!element('iam-principals').children.length)element('iam-principals').textContent='No identities match. Check inventory coverage before concluding that access is synchronized.';
  }
@@ -56,9 +75,9 @@
  function renderRows(){if(!report)return;element('iam-detail').hidden=true;const query=element('iam-search').value.trim().toLowerCase();const rows=report.resources.filter(row=>(!query||[row.name,row.principal_id,row.identity?.display_name||'',row.identity?.user_principal_name||''].some(value=>value.toLowerCase().includes(query)))&&(!element('iam-status').value||element('iam-status').value===row.status));const total=Math.max(1,Math.ceil(rows.length/pageSize));page=Math.min(page,total-1);element('iam-rows').replaceChildren();
   for(const row of rows.slice(page*pageSize,(page+1)*pageSize)){const tr=document.createElement('tr');const origin=side=>!row[side]?'Not observed':row[side].assignments.map(item=>item.inherited?'Inherited: '+item.scope:'Direct at AKS').join('; ');
    for(const text of [row.name,identityLabel(row)+' · '+row.principal_id,'Source: '+origin('source')+' / Target: '+origin('target'),row.status]){const td=document.createElement('td');td.textContent=text;tr.append(td);}const actions=document.createElement('td'),view=document.createElement('button');view.type='button';view.textContent='View comparison';view.onclick=()=>{element('iam-detail').hidden=false;element('iam-detail-title').textContent=row.name+' / '+identityLabel(row)+' / '+row.principal_id;element('iam-detail-recommendation').textContent=row.recommendation;for(const side of ['source','target'])element('iam-detail-'+side).textContent=row[side]?JSON.stringify(row[side],null,2):row.status==='UNKNOWN'?'Unavailable or not observed; coverage is incomplete':'Not present in the completed inventory';element('iam-detail').scrollIntoView({block:'start'});};actions.append(view);
-   if(row.syncable){const sync=document.createElement('button');sync.type='button';sync.textContent='Sync missing role';sync.dataset.iamSync='true';sync.disabled=stale()||writing||running;sync.onclick=()=>preview(row);actions.append(sync);}tr.append(actions);element('iam-rows').append(tr);
+   if(row.syncable)actions.append(assignButton(row));tr.append(actions);element('iam-rows').append(tr);
   }
-  if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=5;td.textContent='No role assignments match. Check coverage before treating an empty inventory as synchronized.';tr.append(td);element('iam-rows').append(tr);}element('iam-count').textContent=rows.length+' of '+report.resources.length+' Azure IAM grants';element('iam-page').textContent='Page '+(page+1)+' of '+total;element('iam-prev').disabled=page===0;element('iam-next').disabled=page>=total-1;
+  if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=5;td.textContent='No role assignments match. Check coverage before treating an empty inventory as synchronized.';tr.append(td);element('iam-rows').append(tr);}element('iam-count').textContent=rows.length+' of '+report.resources.length+' Azure IAM grants';element('iam-page').textContent='Page '+(page+1)+' of '+total;element('iam-prev').disabled=page===0;element('iam-next').disabled=page>=total-1;updateAssignButtons();
  }
  for(const id of ['iam-search','iam-status'])element(id).addEventListener('input',()=>{page=0;renderRows();});element('iam-prev').onclick=()=>{page--;renderRows();};element('iam-next').onclick=()=>{page++;renderRows();};
  async function discard(token){if(token)try{await clusterRequest('/api/iam/sync/discard',{token});}catch{/* Preview expires server-side. */}}
@@ -68,7 +87,7 @@
   try{const result=await clusterRequest('/api/iam/sync/plan',{...scope(),principal_id:row.principal_id,role_id:row.role_id});if(version!==generation||!element('iam-sync-dialog').open){await discard(result.token);return;}if(JSON.stringify(scope())!==submitted){await discard(result.token);throw Error('Scope changed. Cancel and scan again.');}plan={...result,scope:submitted};element('iam-confirm-role').textContent=result.grant.roleName;element('iam-confirm-principal').textContent=identityLabel(row)+' · '+result.grant.principalId+' · '+result.grant.principalType;element('iam-confirm-scope').textContent=result.grant.targetScope;element('iam-confirm-warning').textContent=result.warning;element('iam-confirm-status').textContent='Review the target grant, then confirm. Preview expires in 5 minutes.';element('iam-sync-confirm').disabled=false;expiry=setTimeout(()=>{if(plan?.token!==result.token||writing)return;discard(plan.token);plan=null;element('iam-sync-confirm').disabled=true;element('iam-confirm-status').textContent='Preview expired. Cancel and preview again.';},(result.expires_in||300)*1000);
   }catch(error){if(version===generation)element('iam-confirm-status').textContent=error.message;}
  }
- element('iam-sync-confirm').onclick=async()=>{if(!plan||writing)return;if(plan.scope!==JSON.stringify(scope())){element('iam-confirm-status').textContent='Scope changed. Cancel and scan again.';element('iam-sync-confirm').disabled=true;return;}writing=true;clearTimeout(expiry);element('iam-sync-confirm').disabled=true;element('iam-sync-cancel').disabled=true;element('iam-start').disabled=true;element('iam-confirm-status').textContent='Creating target Azure IAM role assignment…';
+ element('iam-sync-confirm').onclick=async()=>{if(!plan||writing)return;if(plan.scope!==JSON.stringify(scope())){element('iam-confirm-status').textContent='Scope changed. Cancel and scan again.';element('iam-sync-confirm').disabled=true;return;}writing=true;updateAssignButtons();clearTimeout(expiry);element('iam-sync-confirm').disabled=true;element('iam-sync-cancel').disabled=true;element('iam-start').disabled=true;element('iam-confirm-status').textContent='Creating target Azure IAM role assignment…';
   try{const result=await clusterRequest('/api/iam/sync/execute',{token:plan.token,confirm:true});element('iam-confirm-status').textContent=result.status+' · Scan IAM again before further sync. API acceptance does not prove effective application access.';}catch(error){element('iam-confirm-status').textContent=error.message+' Inspect target IAM and history before retrying.';}
   finally{plan=null;reportScope=null;generation++;writing=false;element('iam-sync-cancel').disabled=false;element('iam-sync-cancel').textContent='Close';element('iam-start').disabled=false;markStale();await loadHistory();}
  };

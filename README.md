@@ -184,7 +184,9 @@ managed identities or federated credentials. Workload migration remains separate
    differences. Comparison uses principal object ID, role definition GUID,
    assignment conditions and role permissions. Duplicate equivalent direct and
    inherited grants do not create false differences.
-4. For an eligible **SOURCE_ONLY** direct grant choose **Sync missing role**.
+4. In an identity summary, each missing role has an **Assign to target** button
+   when the direct grant is eligible. The detailed table offers the same action.
+   Roles that require manual review show the reason instead of an assign button.
    Review the exact principal, Azure role and target AKS resource scope, then
    explicitly confirm **Create target assignment**. Cancelling performs no write.
 
