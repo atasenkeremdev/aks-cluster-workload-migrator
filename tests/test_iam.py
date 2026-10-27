@@ -44,6 +44,8 @@ class RoleIAMTests(unittest.TestCase):
 
     def azure(self,args):
         self.calls.append(args)
+        if args[:2]==['cloud','show']:return 'https://graph.microsoft.com/'
+        if args[0]=='rest':return {'value':[{'id':PRINCIPAL,'displayName':'Platform Readers','@odata.type':'#microsoft.graph.group'}]}
         source=args[args.index('--subscription')+1].startswith('1111')
         if args[:2]==['account','show']:
             return '55555555-5555-5555-5555-555555555555' if self.cross_tenant and not source else TENANT
@@ -70,7 +72,7 @@ class RoleIAMTests(unittest.TestCase):
         kubectl.assert_not_called()
         self.assertTrue(result['complete']);row=result['resources'][0]
         self.assertEqual(row['name'],'Reader');self.assertEqual(row['status'],'SOURCE_ONLY');self.assertTrue(row['syncable'])
-        self.assertTrue(all(args[:3] in (['role','assignment','list'],['role','definition','list']) for args in self.calls))
+        self.assertTrue(all(args[:3] in (['role','assignment','list'],['role','definition','list']) or args[:2]==['cloud','show'] or (args[0]=='rest' and '/directoryObjects/getByIds' in args[args.index('--url')+1]) for args in self.calls))
         self.assertEqual(self.writes,[])
 
     def test_generated_assignment_ids_and_cluster_scope_ids_do_not_create_false_differences(self):
@@ -224,3 +226,78 @@ class ContextResolutionTests(unittest.TestCase):
         with patch('migrator.kubernetes.context_args',return_value=['--context','alias']),patch('migrator.kubernetes.run',return_value='https://api.example'),patch('migrator.azure_iam.run_json',side_effect=azure):
             result=azure_iam.resolve_context({'context':'alias'})
         self.assertIsNone(result['resource_id']);self.assertIn('could not be read',result['message'])
+
+
+class HumanReadableIAMTests(unittest.TestCase):
+    USER='11111111-aaaa-aaaa-aaaa-111111111111'
+    GROUP='22222222-bbbb-bbbb-bbbb-222222222222'
+    MANAGED='33333333-cccc-cccc-cccc-333333333333'
+    APP='44444444-dddd-dddd-dddd-444444444444'
+
+    def row(self,principal,kind,role='Reader',status='SOURCE_ONLY'):
+        return {'principal_id':principal,'name':role,'status':status,
+                'source':{'assignments':[{'principalType':kind}]},
+                'target':{'assignments':[{'principalType':kind}]} if status=='MATCH' else None}
+
+    def test_names_user_group_and_managed_identity_types_are_resolved_without_secrets(self):
+        from migrator import iam_principals
+        rows=[self.row(self.USER,'User'),self.row(self.USER,'User','AKS RBAC Reader','MATCH'),self.row(self.GROUP,'Group'),self.row(self.MANAGED,'ServicePrincipal'),self.row(self.APP,'ServicePrincipal')]
+        objects=[{'id':self.USER,'displayName':'Alex','userPrincipalName':'alex@example.com','@odata.type':'#microsoft.graph.user','password':'PRIVATE'},
+                 {'id':self.GROUP,'displayName':'Platform Team','@odata.type':'#microsoft.graph.group'},
+                 {'id':self.MANAGED,'displayName':'payments-identity','@odata.type':'#microsoft.graph.servicePrincipal','servicePrincipalType':'ManagedIdentity'},
+                 {'id':self.APP,'displayName':'automation-app','@odata.type':'#microsoft.graph.servicePrincipal','servicePrincipalType':'Application'}]
+        def query(args):
+            if args[:2]==['cloud','show']:return 'https://graph.microsoft.com/'
+            self.assertEqual(args[:3],['rest','--method','POST'])
+            self.assertTrue(args[args.index('--url')+1].endswith('/directoryObjects/getByIds'))
+            self.assertEqual(set(json.loads(args[args.index('--body')+1])['ids']),{self.USER,self.GROUP,self.MANAGED,self.APP})
+            return {'value':objects}
+        with patch('migrator.azure_iam.run_json',side_effect=query):identities=iam_principals.resolve(rows,SOURCE_ID,TARGET_ID)
+        self.assertEqual(identities[self.MANAGED]['principal_type'],'ManagedIdentity')
+        self.assertEqual(identities[self.APP]['principal_type'],'ServicePrincipal')
+        self.assertEqual(identities[self.USER]['user_principal_name'],'alex@example.com')
+        summaries=iam_principals.summarize(rows,identities,'aks-source','aks-target')
+        user=next(item for item in summaries if item['principal_id']==self.USER)
+        self.assertEqual(user['source_roles'],['AKS RBAC Reader','Reader'])
+        self.assertEqual(user['target_roles'],['AKS RBAC Reader'])
+        self.assertEqual(user['missing_roles'],['Reader'])
+        self.assertIn('Missing role assignments on aks-target: Reader',user['summary'])
+        self.assertTrue(any('Managed identity payments-identity' in item['summary'] for item in summaries))
+        self.assertNotIn('PRIVATE',json.dumps(summaries))
+
+    def test_directory_permission_failure_keeps_object_id_and_does_not_invent_names(self):
+        from migrator import iam_principals
+        rows=[self.row(self.GROUP,'Group')]
+        with patch('migrator.azure_iam.run_json',side_effect=ClusterError('Directory access denied')):
+            identities=iam_principals.resolve(rows,SOURCE_ID,TARGET_ID)
+        summary=iam_principals.summarize(rows,identities,'source','target')[0]
+        self.assertFalse(summary['name_resolved']);self.assertEqual(summary['display_name'],self.GROUP)
+        self.assertIn('Display name could not be resolved',summary['summary'])
+        self.assertEqual(rows[0]['status'],'SOURCE_ONLY')
+
+    def test_unknown_coverage_does_not_claim_missing_roles(self):
+        from migrator import iam_principals
+        rows=[self.row(self.USER,'User',status='UNKNOWN')]
+        with patch('migrator.azure_iam.run_json',side_effect=ClusterError('Unavailable')):
+            identities=iam_principals.resolve(rows,SOURCE_ID,TARGET_ID)
+        summary=iam_principals.summarize(rows,identities,'source','target')[0]
+        self.assertEqual(summary['missing_roles'],[])
+        self.assertIn('missing roles cannot be confirmed',summary['summary'])
+        self.assertNotIn('No source role assignments are missing',summary['summary'])
+
+    def test_identical_display_names_never_merge_distinct_principals(self):
+        from migrator import iam_principals
+        rows=[self.row(self.USER,'User'),self.row(self.GROUP,'User',status='MATCH')]
+        identities={key:{'principal_id':key,'display_name':'Alex','principal_type':'User','name_resolved':True} for key in (self.USER,self.GROUP)}
+        summaries=iam_principals.summarize(rows,identities,'source','target')
+        self.assertEqual(len(summaries),2)
+        self.assertEqual(next(item for item in summaries if item['principal_id']==self.USER)['missing_roles'],['Reader'])
+        self.assertEqual(next(item for item in summaries if item['principal_id']==self.GROUP)['missing_roles'],[])
+
+    def test_directory_objects_not_in_the_requested_batch_are_not_exported(self):
+        from migrator import iam_principals
+        rows=[self.row(self.USER,'User')]
+        def query(args):
+            return 'https://graph.microsoft.com/' if args[:2]==['cloud','show'] else {'value':[{'id':self.APP,'displayName':'UNREQUESTED'}]}
+        with patch('migrator.azure_iam.run_json',side_effect=query):identities=iam_principals.resolve(rows,SOURCE_ID,TARGET_ID)
+        self.assertNotIn('UNREQUESTED',json.dumps(identities));self.assertFalse(identities[self.USER]['name_resolved'])

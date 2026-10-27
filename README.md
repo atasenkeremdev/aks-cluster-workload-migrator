@@ -171,7 +171,14 @@ managed identities or federated credentials. Workload migration remains separate
    subscriptions and only the kubeconfig API server URL, not credential material.
 2. Select **Scan IAM inventory**. Reads use the host's existing Azure CLI login and
    explicit subscriptions. No Kubernetes RBAC API is queried during the scan.
-3. Review the role name, principal object ID, direct/inherited origin and status.
+3. Review **Access by identity** for readable summaries grouped by user, group,
+   managed identity or service principal. For example: **Group Platform Readers:
+   observed roles on source: Reader, AKS RBAC Reader. Missing role assignments on
+   target: Reader.** Each identity shows its object ID and, when available, its
+   display name and user principal name. Search summaries by name, email, ID or
+   role. **Download readable report** exports these summaries as text; the JSON
+   report retains the complete machine-readable inventory.
+   The detailed table preserves role names, direct/inherited origin and status.
    Filter by role/principal or status; download a complete JSON report. Generated
    assignment IDs and source/target AKS scope IDs are not treated as permission
    differences. Comparison uses principal object ID, role definition GUID,
@@ -187,6 +194,26 @@ permissions. **TARGET_ONLY** grants remain untouched. **UNKNOWN** indicates
 unavailable reads or unresolved role definitions; it never enables sync. Roles
 inherited from a subscription, resource group or management group are shown for
 comparison but are not recreated at the target AKS scope.
+
+### Identity display names
+
+Names are optional display metadata, never identity matching or sync keys. The
+application uses the current Azure cloud's Microsoft Graph endpoint and a batched,
+read-only `directoryObjects/getByIds` query through Azure CLI (`az rest`). This
+POST queries directory metadata and does not create directory objects or grants.
+Lookup uses the subscription associated with each observed identity. Users and
+groups are labeled from directory object type; a service principal is labeled
+**Managed identity** only when Graph explicitly reports that type. Other service
+principals are not guessed to be managed identities.
+
+Azure role-read permission does not necessarily include directory-read access.
+If Graph names are unavailable, restricted, deleted or incomplete, the object ID
+and assignment principal type remain visible; role comparison and sync eligibility
+are unchanged. Unknown role coverage never produces a confident missing-role
+summary. Identities with the same display name remain separate by object ID.
+Only display name, user principal name, object ID and identity type are projected;
+credentials and unrelated directory fields are not exported. Text/JSON reports
+now contain these identity names as well as access metadata.
 
 ### Additive IAM sync safeguards
 
@@ -239,7 +266,7 @@ Partial coverage is shown per side. Zero observed rows with failed reads do not
 mean IAM is synchronized. Scans keep an independent four-worker queue, up to 30
 jobs, ten-minute completed-job retention and the latest 100 activity events.
 Azure CLI commands have a 60-second subprocess budget; switching tabs preserves
-the workload and IAM workflows independently. Reports contain public identity
+the workload and IAM workflows independently. Reports contain identity names, object IDs
 and access metadata, never credential values or tokens.
 
 ## Prepare, then activate

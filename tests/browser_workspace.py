@@ -106,6 +106,8 @@ class WorkspaceBrowserTests(unittest.TestCase):
             self.assertIn('view',args);self.assertIn('jsonpath={.clusters[0].cluster.server}',args)
             return 'https://'+args[args.index('--context')+1]+'.api.example'
         def azure(args):
+            if args[:2]==['cloud','show']:return 'https://graph.microsoft.com/'
+            if args[0]=='rest':return {'value':[{'id':principal,'displayName':'Platform Readers','@odata.type':'#microsoft.graph.group'}]}
             if args[:2]==['account','list']:return ['11111111-1111-1111-1111-111111111111','22222222-2222-2222-2222-222222222222']
             source=args[args.index('--subscription')+1].startswith('1111');scope=source_id if source else target_id
             if args[:2]==['aks','list']:return [{'id':scope,'fqdn':('source' if source else 'target')+'.api.example'}]
@@ -132,6 +134,13 @@ class WorkspaceBrowserTests(unittest.TestCase):
             page.click('#tab-iam');gate.set();page.wait_for_selector('#iam-results',state='visible')
             self.assertIn('Azure Kubernetes Service RBAC Reader',page.locator('#iam-rows').inner_text())
             self.assertEqual(page.locator('#iam-rows tr').count(),2)
+            self.assertIn('Platform Readers',page.locator('#iam-principals').inner_text())
+            self.assertIn('Missing role assignments on target: Reader',page.locator('#iam-principals').inner_text())
+            self.assertIn('Azure Kubernetes Service RBAC Reader',page.locator('#iam-principals').inner_text())
+            with page.expect_download() as readable:page.click('#iam-download-readable')
+            text=Path(readable.value.path()).read_text()
+            self.assertIn('Group Platform Readers',text)
+            self.assertIn('Missing role assignments on target: Reader',text)
             self.assertEqual(page.locator('#iam-rows [data-iam-sync]').count(),1)
             self.assertNotIn('ClusterRole',page.locator('#iam-rows').inner_text())
             page.locator('[data-iam-sync]').click();page.wait_for_function("!document.querySelector('#iam-sync-confirm').disabled")
