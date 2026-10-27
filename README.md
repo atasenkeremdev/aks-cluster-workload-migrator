@@ -170,10 +170,14 @@ candidates; it does **not** create, change or delete identity or access resource
    contexts. Leave namespaces empty for all non-excluded namespaces, or enter up
    to 200 exact names separated by commas or whitespace. Static/system exclusions
    apply. Workload page selections and its additional UI exclusions are not shared.
-2. Leave **Include Azure IAM** enabled for both providers and enter each cluster's
-   full AKS resource ID. Confirm that each ID belongs to its selected context; the
-   application does not infer that mapping from kubeconfig. Disable this option
-   for a Kubernetes-only inventory.
+2. Leave **Include Azure IAM** enabled for both providers and select the source and
+   target contexts. Each AKS resource ID is filled automatically when the context
+   API hostname uniquely matches Azure AKS endpoint metadata. Context aliases and
+   private endpoints are supported. If lookup is unavailable or ambiguous, enter
+   the full AKS resource ID manually. Disable this option
+   for a Kubernetes-only inventory. Automatic lookup reads enabled subscriptions
+   (up to 20) and matches public/private AKS FQDNs to the selected API hostname;
+   it never reads kubeconfig credentials or changes the active context/account.
 3. Select **Scan IAM inventory**. Review completion and per-side coverage before
    treating differences as sync candidates. Filter by provider, kind, status or
    name/namespace; **View comparison** shows only the projected IAM configuration.

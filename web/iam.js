@@ -27,9 +27,31 @@
     include_azure:element('iam-azure').checked,azure_source_id:element('iam-azure-source').value.trim(),azure_target_id:element('iam-azure-target').value.trim()};}
   function markStale(){element('iam-stale').hidden=!report||JSON.stringify(scope())===reportScope;}
   for(const id of ['iam-source','iam-target','iam-namespaces','iam-azure','iam-azure-source','iam-azure-target'])element(id).addEventListener('input',markStale);
+  const resolutionGeneration={source:0,target:0};
+  const resolvedContext={source:'',target:''};
+  async function resolveContext(side){
+    const context=element('iam-'+side).value,input=element('iam-azure-'+side),message=element('iam-resolve-'+side);
+    const generation=++resolutionGeneration[side];
+    if(resolvedContext[side]!==context){input.value='';resolvedContext[side]=context;markStale();}
+    if(!context||!element('iam-azure').checked){message.textContent='';return;}
+    const previous=input.value;
+    message.textContent=(side==='source'?'Source':'Target')+': finding AKS resource ID…';
+    try{
+      const data=await clusterRequest('/api/iam/resolve-context',{context},180000);
+      if(generation!==resolutionGeneration[side]||element('iam-'+side).value!==context||!element('iam-azure').checked)return;
+      // A manual edit made while lookup was running takes precedence.
+      if(input.value!==previous){message.textContent='Manual AKS resource ID retained.';return;}
+      if(data.resource_id)input.value=data.resource_id;
+      message.textContent=(side==='source'?'Source: ':'Target: ')+data.message;markStale();
+    }catch(error){
+      if(generation===resolutionGeneration[side]&&element('iam-'+side).value===context&&element('iam-azure').checked)message.textContent=(side==='source'?'Source: ':'Target: ')+error.message+' Enter the AKS resource ID manually.';
+    }
+  }
+  for(const side of ['source','target'])element('iam-'+side).addEventListener('change',()=>resolveContext(side));
   element('iam-azure').onchange=()=>{
     const enabled=element('iam-azure').checked;element('iam-azure-fields').hidden=!enabled;
     for(const id of ['iam-azure-source','iam-azure-target'])element(id).required=enabled;
+    for(const side of ['source','target'])resolveContext(side);
     markStale();
   };
   element('iam-connect').onclick=async()=>{
@@ -41,6 +63,7 @@
         for(const context of contexts)select.append(new Option(context,context));
         if(contexts.includes(previous))select.value=previous;
       }
+      for(const side of ['source','target'])resolveContext(side);
       element('iam-connection').textContent=contexts.length+' contexts loaded for IAM. Cluster connectivity is checked during the scan.';markStale();
     }catch(error){element('iam-connection').textContent=error.message;}finally{element('iam-connect').disabled=false;}
   };

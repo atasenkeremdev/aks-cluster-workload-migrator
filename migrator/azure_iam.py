@@ -160,3 +160,48 @@ def collect(aks_id, client_ids):
                 fail('AzureRoleAssignment', str(error))
     coverage.extend(checks.values())
     return entries, coverage
+
+
+def resolve_context(body):
+    """Match the selected kubeconfig API hostname to Azure AKS endpoint metadata."""
+    from urllib.parse import urlsplit
+    from .kubernetes import context_args, run
+    context = body['context']
+    args = context_args(context)
+    # Project only the API server URL, never users, certificates or exec configuration.
+    server = run([*args, 'config', 'view', '--minify', '-o', 'jsonpath={.clusters[0].cluster.server}']).strip()
+    try:
+        url = urlsplit(server)
+        hostname = url.hostname.lower().rstrip('.') if url.hostname else None
+        valid = url.scheme == 'https' and not url.username and not url.password and hostname
+    except ValueError:
+        valid = False
+    if not valid:
+        return {'context': context, 'resource_id': None, 'message': 'The context has no usable HTTPS API endpoint. Enter the AKS resource ID manually.'}
+    subscriptions = run_json(['account', 'list', '--query', "[?state=='Enabled'].id"])
+    if not isinstance(subscriptions, list) or any(not isinstance(item, str) for item in subscriptions):
+        raise ClusterError('Azure returned an invalid subscription list.')
+    subscriptions = sorted(set(subscriptions))
+    if not subscriptions or len(subscriptions) > 20:
+        return {'context': context, 'resource_id': None, 'message': 'Automatic lookup requires 1–20 accessible enabled subscriptions. Enter the AKS resource ID manually.'}
+    matches = {}
+    incomplete = False
+    for subscription in subscriptions:
+        try:
+            clusters = run_json(['aks', 'list', '--subscription', subscription, '--query', '[].{id:id,fqdn:fqdn,privateFqdn:privateFqdn}'])
+            if not isinstance(clusters, list):
+                raise ClusterError('Azure returned an invalid AKS list.')
+            for cluster in clusters:
+                resource_id = cluster.get('id', '')
+                endpoints = {value.lower().rstrip('.') for key in ('fqdn', 'privateFqdn')
+                             if isinstance(value := cluster.get(key), str) and value}
+                if hostname in endpoints and isinstance(resource_id, str) and AKS_ID.fullmatch(resource_id):
+                    matches[resource_id.lower()] = resource_id
+        except ClusterError:
+            incomplete = True
+    if len(matches) == 1 and not incomplete:
+        return {'context': context, 'resource_id': next(iter(matches.values())), 'message': 'AKS resource ID matched to the selected context API endpoint.'}
+    message = ('Some subscriptions could not be read.' if incomplete else
+               'Multiple AKS resources match the context endpoint.' if len(matches) > 1 else
+               'No accessible AKS resource matches the context endpoint.')
+    return {'context': context, 'resource_id': None, 'message': message + ' Enter the AKS resource ID manually.'}

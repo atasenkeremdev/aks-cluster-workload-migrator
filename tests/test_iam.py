@@ -163,3 +163,47 @@ class AzureIAMTests(unittest.TestCase):
         self.assertNotIn('PRIVATE',str(caught.exception));self.assertIn('authentication',str(caught.exception))
         self.assertEqual(run.call_args.args[0][1:3],['aks','show'])
         self.assertNotIn('shell',run.call_args.kwargs)
+
+
+class ContextResolutionTests(unittest.TestCase):
+    def resolve(self, endpoint, clusters, failure=False):
+        def azure(args):
+            if args[:2]==['account','list']:return ['11111111-1111-1111-1111-111111111111']
+            if failure:raise ClusterError('Azure denied access')
+            return clusters
+        with patch('migrator.kubernetes.context_args',return_value=['--context','alias']), patch('migrator.kubernetes.run',return_value=endpoint) as kubectl, patch('migrator.azure_iam.run_json',side_effect=azure):
+            result=azure_iam.resolve_context({'context':'alias'})
+        self.assertIn('jsonpath={.clusters[0].cluster.server}',kubectl.call_args.args[0])
+        self.assertNotIn('--raw',kubectl.call_args.args[0])
+        return result
+
+    def test_alias_context_matches_public_endpoint_without_name_guessing(self):
+        result=self.resolve('https://API.EXAMPLE.:443',[{'id':SOURCE_ID,'fqdn':'api.example'}])
+        self.assertEqual(result['resource_id'],SOURCE_ID)
+        self.assertEqual(result['context'],'alias')
+
+    def test_private_endpoint_is_supported(self):
+        result=self.resolve('https://private.example',[{'id':SOURCE_ID,'fqdn':'public.example','privateFqdn':'private.example'}])
+        self.assertEqual(result['resource_id'],SOURCE_ID)
+
+    def test_no_match_and_ambiguous_matches_require_manual_entry(self):
+        self.assertIsNone(self.resolve('https://elsewhere.example',[{'id':SOURCE_ID,'fqdn':'api.example'}])['resource_id'])
+        self.assertIsNone(self.resolve('https://api.example',[{'id':SOURCE_ID,'fqdn':'api.example'},{'id':TARGET_ID,'fqdn':'api.example'}])['resource_id'])
+
+    def test_permission_failure_does_not_guess_an_id(self):
+        self.assertIsNone(self.resolve('https://api.example',[],failure=True)['resource_id'])
+
+    def test_unsafe_endpoint_never_queries_azure(self):
+        for endpoint in ('http://api.example','https://user:password@api.example','not-a-url'):
+            with self.subTest(endpoint=endpoint),patch('migrator.kubernetes.context_args',return_value=['--context','alias']),patch('migrator.kubernetes.run',return_value=endpoint),patch('migrator.azure_iam.run_json') as azure:
+                result=azure_iam.resolve_context({'context':'alias'})
+                self.assertIsNone(result['resource_id']);azure.assert_not_called()
+
+    def test_incomplete_subscription_discovery_does_not_claim_unique_match(self):
+        def azure(args):
+            if args[:2]==['account','list']:return ['one','two']
+            if args[args.index('--subscription')+1]=='two':raise ClusterError('Forbidden')
+            return [{'id':SOURCE_ID,'fqdn':'api.example'}]
+        with patch('migrator.kubernetes.context_args',return_value=['--context','alias']),patch('migrator.kubernetes.run',return_value='https://api.example'),patch('migrator.azure_iam.run_json',side_effect=azure):
+            result=azure_iam.resolve_context({'context':'alias'})
+        self.assertIsNone(result['resource_id']);self.assertIn('could not be read',result['message'])

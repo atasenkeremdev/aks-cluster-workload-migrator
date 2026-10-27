@@ -49,6 +49,43 @@ class WorkspaceBrowserTests(unittest.TestCase):
         self.temp.cleanup()
         self.assertFalse(self.errors)
 
+    def test_iam_context_selection_autofills_ids_without_stale_overwrites(self):
+        page=self.page
+        source_id='/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/source/providers/Microsoft.ContainerService/managedClusters/source'
+        target_id='/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/target/providers/Microsoft.ContainerService/managedClusters/target'
+        pending=[]
+        page.route('**/api/contexts',lambda route:route.fulfill(json={'contexts':['source','target','slow','missing']}))
+        def resolve(route):
+            context=route.request.post_data_json['context']
+            if context=='slow':pending.append(route);return
+            route.fulfill(json={'context':context,'resource_id':source_id if context=='source' else target_id if context=='target' else None,
+                                'message':'Matched.' if context!='missing' else 'No match. Enter the AKS resource ID manually.'})
+        page.route('**/api/iam/resolve-context',resolve)
+        page.click('#tab-iam');page.click('#iam-connect')
+        page.wait_for_function("document.querySelector('#iam-source').options.length===5")
+        page.select_option('#iam-source','source');page.select_option('#iam-target','target')
+        page.wait_for_function("document.querySelector('#iam-azure-source').value.endsWith('/source')&&document.querySelector('#iam-azure-target').value.endsWith('/target')")
+        self.assertEqual(page.locator('#iam-azure-source').input_value(),source_id)
+        self.assertEqual(page.locator('#iam-azure-target').input_value(),target_id)
+        page.select_option('#iam-source','slow')
+        page.wait_for_function("document.querySelector('#iam-resolve-source').textContent.includes('finding')")
+        self.assertEqual(page.locator('#iam-azure-source').input_value(),'')
+        page.select_option('#iam-source','target')
+        page.wait_for_function("document.querySelector('#iam-azure-source').value.endsWith('/target')")
+        pending.pop().fulfill(json={'context':'slow','resource_id':source_id,'message':'Late match'})
+        self.assertEqual(page.locator('#iam-azure-source').input_value(),target_id)
+        page.select_option('#iam-source','slow')
+        page.wait_for_function("document.querySelector('#iam-resolve-source').textContent.includes('finding')")
+        page.fill('#iam-azure-source','manual-resource-id')
+        pending.pop().fulfill(json={'context':'slow','resource_id':source_id,'message':'Matched'})
+        page.wait_for_function("document.querySelector('#iam-resolve-source').textContent.includes('Manual')")
+        self.assertEqual(page.locator('#iam-azure-source').input_value(),'manual-resource-id')
+        page.select_option('#iam-source','missing')
+        page.wait_for_function("document.querySelector('#iam-resolve-source').textContent.includes('No match')")
+        self.assertEqual(page.locator('#iam-azure-source').input_value(),'')
+        page.fill('#iam-azure-source',source_id)
+        self.assertEqual(page.locator('#iam-azure-source').input_value(),source_id)
+
     def test_iam_workspace_is_independent_partial_read_only_and_exportable(self):
         page = self.page
         source_id = '/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/source/providers/Microsoft.ContainerService/managedClusters/source'
@@ -60,8 +97,12 @@ class WorkspaceBrowserTests(unittest.TestCase):
             reads.append(args)
             self.assertIsNone(payload)
             if 'get-contexts' in args:return 'source\ntarget\n'
-            self.assertIn('get',args)
             context = args[args.index('--context')+1]
+            if 'view' in args:
+                self.assertIn('jsonpath={.clusters[0].cluster.server}',args)
+                self.assertNotIn('--raw',args)
+                return 'https://'+context+'.api.example'
+            self.assertIn('get',args)
             resource = args[args.index('get')+1]
             if resource=='serviceaccounts':
                 return json.dumps({'items':[{'metadata':{'name':'app','namespace':'demo','annotations':{
@@ -72,8 +113,12 @@ class WorkspaceBrowserTests(unittest.TestCase):
             return '{"items":[]}'
         def azure(args):
             self.assertTrue('list' in args or 'show' in args)
+            if args[:2]==['account','list']:
+                return ['11111111-1111-1111-1111-111111111111','22222222-2222-2222-2222-222222222222']
             source = args[args.index('--subscription')+1].startswith('1111')
             context='source' if source else 'target'
+            if args[:2]==['aks','list']:
+                return [{'id':source_id if source else target_id,'fqdn':context+'.api.example'}]
             if args[:2]==['aks','show']:
                 gate.wait(15)
                 return {'enableRbac':True,'identity':{'type':'SystemAssigned','principalId':'principal-'+context},
@@ -127,7 +172,7 @@ class WorkspaceBrowserTests(unittest.TestCase):
             page.set_viewport_size({'width':1500,'height':1100})
             page.click('#tab-workloads')
             self.assertEqual(page.locator('#rows').inner_text(),workload_rows)
-            self.assertTrue(all('get' in args or 'get-contexts' in args for args in reads))
+            self.assertTrue(all('get' in args or 'get-contexts' in args or ('view' in args and 'jsonpath={.clusters[0].cluster.server}' in args) for args in reads))
 
     def test_iam_pagination_kubernetes_only_and_keyboard_tabs(self):
         page = self.page

@@ -6,7 +6,7 @@ from pathlib import Path
 from .core import analyze, load_exclusions, PROTECTED, STATIC_EXCLUSIONS, DEFAULT_EXCLUSIONS_FILE
 from .kubernetes import ClusterError, contexts, namespaces, live_analyze, sync_plan, sync_execute, operation_health, rollback_plan, rollback_execute, discard_plans, source_scale_plan, source_scale_execute
 
-from . import jobs, history, iam_jobs
+from . import jobs, history, iam_jobs, azure_iam
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 
@@ -66,7 +66,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get_content_type() != 'application/json':
             self.reply(415, {'error': 'Content-Type must be application/json.'})
             return
-        if self.path not in ('/api/iam/jobs', '/api/source/scale/plan', '/api/source/scale/execute', '/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute', '/api/live/jobs', '/api/operations/health', '/api/rollback/plan', '/api/rollback/execute', '/api/sync/discard'):
+        if self.path not in ('/api/iam/resolve-context', '/api/iam/jobs', '/api/source/scale/plan', '/api/source/scale/execute', '/api/analyze', '/api/live/analyze', '/api/namespaces', '/api/sync/plan', '/api/sync/execute', '/api/live/jobs', '/api/operations/health', '/api/rollback/plan', '/api/rollback/execute', '/api/sync/discard'):
             self.reply(404, {'error': 'Not found'})
             return
         try:
@@ -75,6 +75,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(413, {'error': 'JSON payload must be between 1 byte and 5 MB'})
                 return
             body = json.loads(self.rfile.read(length))
+            if self.path == '/api/iam/resolve-context':
+                self.reply(200, azure_iam.resolve_context(body))
+                return
             if self.path == '/api/iam/jobs':
                 self.reply(202, iam_jobs.start(body))
                 return
